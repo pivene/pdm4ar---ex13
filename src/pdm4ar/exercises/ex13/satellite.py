@@ -39,24 +39,40 @@ class SatelliteDyn:
         extract the state from self.x the following way:
         0x 1y 2psi 3vx 4vy 5dpsi
         """
-        # TODO Modify dynamics
+        # Extract variables
+        x, y, psi, v_x, v_y, d_psi = self.x
+        F_l, F_r = self.u
+        t_f = self.p[0]
 
-        f = spy.zeros(self.n_x, 1)  # replace this line by computing the dynamics like in following example
-        "f[0] = ..."
-        "f[1] = ..."
-        "..."
-        "f[5] = ..."
+        # Extract parameters
+        m = self.sp.m_v     # mass of vehicle
+        Iz = self.sg.Iz     # rotational inertia
+        l_m = self.sg.l_m   # lateral distance from CoG to thrusters
 
-        # HINT for the dynamics: SymPy is a library for symbolic mathematics.
-        # Here you’ll need symbolic math, not numerical math.
-        # That means you should use SymPy functions (like sympy.sin, sympy.exp, …)
-        # together with symbols, instead of numerical functions from numpy or math.
+        # Initialize the dynamics vector
+        f = spy.zeros(self.n_x, 1)
 
-        # Jacobians and matrices of the system (don't need to change)
+        # Position dynamics
+        f[0] = t_f * v_x
+        f[1] = t_f * v_y
+
+        # Orientation dynamics
+        f[2] = t_f * d_psi
+
+        # Translational acceleration
+        F_total = F_l + F_r
+        f[3] = t_f * (F_total * spy.cos(psi) / m)
+        f[4] = t_f * (F_total * spy.sin(psi) / m)
+
+        # Angular acceleration
+        f[5] = t_f * (l_m * (F_r - F_l) / Iz)
+
+        # Calculate the Jacobians
         A = f.jacobian(self.x)
         B = f.jacobian(self.u)
         F = f.jacobian(self.p)
 
+        # Lambdified functions
         f_func = spy.lambdify((self.x, self.u, self.p), f, "numpy")
         A_func = spy.lambdify((self.x, self.u, self.p), A, "numpy")
         B_func = spy.lambdify((self.x, self.u, self.p), B, "numpy")
