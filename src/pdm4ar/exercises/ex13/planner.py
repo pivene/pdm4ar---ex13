@@ -132,7 +132,7 @@ class SatellitePlanner:
         #
         # TODO: Implement SCvx algorithm or comparable
         #
-
+        # test for github
         """
         for SCvx it would follow a logic similar to:
         
