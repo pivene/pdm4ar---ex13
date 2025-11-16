@@ -214,6 +214,10 @@ class SatellitePlanner:
         problem_parameters = {
             "init_state": cvx.Parameter(n_x),
             "goal_state": cvx.Parameter(n_x),
+            # reference solution
+            "X_ref": [cvx.Parameter(n_x) for _ in range(K)],
+            "U_ref": [cvx.Parameter(n_u) for _ in range(K)],
+            "p_ref": cvx.Parameter(n_p),
             # tolerances
             "pos_tol": cvx.Parameter(nonneg=True),
             "dir_tol": cvx.Parameter(nonneg=True),
@@ -230,6 +234,8 @@ class SatellitePlanner:
             "C_coll": [[cvx.Parameter((1, n_x)) for _ in range(num_obstacles)] for _ in range(K)],
             "G_coll": [[cvx.Parameter((1, n_p)) for _ in range(num_obstacles)] for _ in range(K)],
             "r_coll": [[cvx.Parameter() for _ in range(num_obstacles)] for _ in range(K)],
+            # trust region radius
+            "eta_tr": cvx.Parameter(nonneg=True),
         }
 
         return problem_parameters
@@ -244,6 +250,8 @@ class SatellitePlanner:
         K = self.params.K
 
         P = self.problem_parameters
+        goal = P["goal_state"]
+        eta_tr = P["eta_tr"]
 
         X = self.variables["X"]
         U = self.variables["U"]
@@ -276,15 +284,22 @@ class SatellitePlanner:
                     P["C_coll"][k][j] @ X[:, k] + P["G_coll"][k][j] @ p + P["r_coll"][k][j] <= nu_s[j, k]
                 )
 
-        goal = P["goal_state"]
-        constraints = [
+        # trust region constraints
+        tr_constraints = []
+        for k in range(K):
+            dx = X[:, k] - P["X_ref"][k]
+            du = U[:, k] - P["U_ref"][k]
+            dp = p - P["p_ref"]
+            tr_constraints.append(cvx.norm(dx, 2) + cvx.norm(du, 2) + cvx.norm(dp, 2) <= eta_tr)
+
+        # general constraints
+        gen_constraints = [
             # initial state
             X[:, 0] - P["init_state"] == nu_ic,
             # final state
-            # position
+            # pose
             cvx.abs(X[0, K - 1] - goal[0]) <= P["pos_tol"] + nu_tc[0],
             cvx.abs(X[1, K - 1] - goal[1]) <= P["pos_tol"] + nu_tc[1],
-            # orientation
             cvx.abs(X[2, K - 1] - goal[2]) <= P["dir_tol"] + nu_tc[2],
             # velocity
             cvx.abs(X[3, K - 1] - goal[3]) <= P["vel_tol"] + nu_tc[3],
@@ -303,7 +318,7 @@ class SatellitePlanner:
             nu_s >= 0,
         ]
 
-        constraints = constraints + dynamic_constraints + obstacles_constraints
+        constraints = gen_constraints + dynamic_constraints + obstacles_constraints + tr_constraints
 
         return constraints
 
@@ -330,7 +345,7 @@ class SatellitePlanner:
         # cost of slack variables that must be heavily penalized
         slack_cost = lam * (cvx.norm1(nu) + cvx.norm1(nu_s) + cvx.norm1(nu_ic) + cvx.norm1(nu_tc))
 
-        objective = self.params.weight_p @ p + slack_cost + travelled_distance + average_input
+        objective = self.params.weight_p @ p + slack_cost + 0.5 * travelled_distance + 0.5 * average_input
 
         return cvx.Minimize(objective)
 
