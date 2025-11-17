@@ -161,10 +161,13 @@ class SatellitePlanner:
         Define initial guess for SCvx.
         """
         K = self.params.K
+        n_x = self.satellite.n_x
+        n_u = self.satellite.n_u
+        n_p = self.satellite.n_p
 
-        X = np.zeros((self.satellite.n_x, K))
-        U = np.zeros((self.satellite.n_u, K))
-        p = np.zeros((self.satellite.n_p))
+        X = np.zeros((n_x, K))
+        U = np.zeros((n_u, K))
+        p = np.zeros((n_p))
 
         return X, U, p
 
@@ -179,10 +182,21 @@ class SatellitePlanner:
         """
         Define optimisation variables for SCvx.
         """
+        K = self.params.K
+        n_x = self.satellite.n_x
+        n_u = self.satellite.n_u
+        n_p = self.satellite.n_p
+        num_obstacles = len(self.planets) + len(self.asteroids)
+
         variables = {
-            "X": cvx.Variable((self.satellite.n_x, self.params.K)),
-            "U": cvx.Variable((self.satellite.n_u, self.params.K)),
-            "p": cvx.Variable(self.satellite.n_p),
+            "X": cvx.Variable((n_x, K)),
+            "U": cvx.Variable((n_u, K)),
+            "p": cvx.Variable(n_p),
+            # slack
+            "nu": cvx.Variable((n_x, K - 1)),
+            "nu_s": cvx.Variable((num_obstacles, K)),
+            "nu_ic": cvx.Variable(n_x),
+            "nu_tc": cvx.Variable(n_x),
         }
 
         return variables
@@ -191,9 +205,37 @@ class SatellitePlanner:
         """
         Define problem parameters for SCvx.
         """
+        n_x = self.satellite.n_x
+        n_u = self.satellite.n_u
+        n_p = self.satellite.n_p
+        K = self.params.K
+        num_obstacles = len(self.planets) + len(self.asteroids)
+
         problem_parameters = {
-            "init_state": cvx.Parameter(self.satellite.n_x)
-            # ...
+            "init_state": cvx.Parameter(n_x),
+            "goal_state": cvx.Parameter(n_x),
+            # reference solution
+            "X_ref": [cvx.Parameter(n_x) for _ in range(K)],
+            "U_ref": [cvx.Parameter(n_u) for _ in range(K)],
+            "p_ref": cvx.Parameter(n_p),
+            # tolerances
+            "pos_tol": cvx.Parameter(nonneg=True),
+            "dir_tol": cvx.Parameter(nonneg=True),
+            "vel_tol": cvx.Parameter(nonneg=True),
+            # max_time
+            "p_max": cvx.Parameter(nonneg=True),
+            # linearized dynamics parameters
+            "A_bar": [cvx.Parameter((n_x, n_x)) for _ in range(K - 1)],
+            "B_minus_bar": [cvx.Parameter((n_x, n_u)) for _ in range(K - 1)],
+            "B_plus_bar": [cvx.Parameter((n_x, n_u)) for _ in range(K - 1)],
+            "F_bar": [cvx.Parameter((n_x, n_p)) for _ in range(K - 1)],
+            "r_bar": [cvx.Parameter(n_x) for _ in range(K - 1)],
+            # linearized obstacles parameters
+            "C_coll": [[cvx.Parameter((1, n_x)) for _ in range(num_obstacles)] for _ in range(K)],
+            "G_coll": [[cvx.Parameter((1, n_p)) for _ in range(num_obstacles)] for _ in range(K)],
+            "r_coll": [[cvx.Parameter() for _ in range(num_obstacles)] for _ in range(K)],
+            # trust region radius
+            "eta_tr": cvx.Parameter(nonneg=True),
         }
 
         return problem_parameters
@@ -202,10 +244,82 @@ class SatellitePlanner:
         """
         Define constraints for SCvx.
         """
-        constraints = [
-            self.variables["X"][:, 0] == self.problem_parameters["init_state"],
-            # ...
+        n_x = self.satellite.n_x
+        n_u = self.satellite.n_u
+        n_p = self.satellite.n_p
+        K = self.params.K
+
+        P = self.problem_parameters
+        goal = P["goal_state"]
+        eta_tr = P["eta_tr"]
+
+        X = self.variables["X"]
+        U = self.variables["U"]
+        p = self.variables["p"]
+        nu = self.variables["nu"]
+        nu_s = self.variables["nu_s"]
+        nu_ic = self.variables["nu_ic"]
+        nu_tc = self.variables["nu_tc"]
+
+        num_obstacles = len(self.planets) + len(self.asteroids)
+
+        # dynamic constraints
+        dynamic_constraints = []
+        for k in range(K - 1):
+            dynamic_constraints.append(
+                X[:, k + 1]
+                == P["A_bar"][k] @ X[:, k]
+                + P["B_minus_bar"][k] @ U[:, k]
+                + P["B_plus_bar"][k] @ U[:, k + 1]
+                + P["F_bar"][k] @ p
+                + P["r_bar"][k]
+                + nu[:, k]
+            )
+
+        # obstacles constraints
+        obstacles_constraints = []
+        for k in range(K):
+            for j in range(num_obstacles):
+                obstacles_constraints.append(
+                    P["C_coll"][k][j] @ X[:, k] + P["G_coll"][k][j] @ p + P["r_coll"][k][j] <= nu_s[j, k]
+                )
+
+        # trust region constraints
+        tr_constraints = []
+        for k in range(K):
+            dx = X[:, k] - P["X_ref"][k]
+            du = U[:, k] - P["U_ref"][k]
+            dp = p - P["p_ref"]
+            tr_constraints.append(cvx.norm(dx, 2) + cvx.norm(du, 2) + cvx.norm(dp, 2) <= eta_tr)
+
+        # general constraints
+        gen_constraints = [
+            # initial state
+            X[:, 0] - P["init_state"] == nu_ic,
+            # final state
+            # pose
+            cvx.abs(X[0, K - 1] - goal[0]) <= P["pos_tol"] + nu_tc[0],
+            cvx.abs(X[1, K - 1] - goal[1]) <= P["pos_tol"] + nu_tc[1],
+            cvx.abs(X[2, K - 1] - goal[2]) <= P["dir_tol"] + nu_tc[2],
+            # velocity
+            cvx.abs(X[3, K - 1] - goal[3]) <= P["vel_tol"] + nu_tc[3],
+            cvx.abs(X[4, K - 1] - goal[4]) <= P["vel_tol"] + nu_tc[4],
+            cvx.abs(X[5, K - 1] - goal[5]) <= P["vel_tol"] + nu_tc[5],
+            # control inputs at start and goal
+            U[:, 0] == 0,
+            U[:, K - 1] == 0,
+            # control inputs within limits
+            U >= self.sp.F_limits[0],
+            U <= self.sp.F_limits[1],
+            # max_time
+            p <= P["p_max"],
+            # positive slack variables
+            nu_tc >= 0,
+            nu_s >= 0,
         ]
+
+        constraints = gen_constraints + dynamic_constraints + obstacles_constraints + tr_constraints
+
         return constraints
 
     def _get_objective(self) -> Union[cvx.Minimize, cvx.Maximize]:
@@ -213,7 +327,25 @@ class SatellitePlanner:
         Define objective for SCvx.
         """
         # Example objective
-        objective = self.params.weight_p @ self.variables["p"]
+        X = self.variables["X"]
+        U = self.variables["U"]
+        p = self.variables["p"]
+
+        K = self.params.K
+        lam = self.params.lambda_nu
+        nu = self.variables["nu"]
+        nu_s = self.variables["nu_s"]
+        nu_ic = self.variables["nu_ic"]
+        nu_tc = self.variables["nu_tc"]
+
+        # travelled distance component
+        travelled_distance = cvx.sum([cvx.norm(X[0:2, k + 1] - X[0:2, k], 2) for k in range(K - 1)])
+        # average control component
+        average_input = cvx.sum(cvx.abs(U)) / K
+        # cost of slack variables that must be heavily penalized
+        slack_cost = lam * (cvx.norm1(nu) + cvx.norm1(nu_s) + cvx.norm1(nu_ic) + cvx.norm1(nu_tc))
+
+        objective = self.params.weight_p @ p + slack_cost + 0.5 * travelled_distance + 0.5 * average_input
 
         return cvx.Minimize(objective)
 
