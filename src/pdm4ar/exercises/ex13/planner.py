@@ -418,6 +418,14 @@ class SatellitePlanner:
         # HINT: be aware that the matrices returned by calculate_discretization are flattened in F order (this way affect your code later when you use them)
         # Therefore the matrices need to be reshaped
 
+        print("\n--- DEBUG: shapes from FOH discretization ---")
+        print("A_bar[k] shape:", A_bar[0].shape)
+        print("B_plus_bar[k] shape:", B_plus_bar[0].shape)
+        print("B_minus_bar[k] shape:", B_minus_bar[0].shape)
+        print("F_bar[k] shape:", F_bar[0].shape)
+        print("r_bar[k] shape:", r_bar[0].shape)
+        print("--------------------------------------------\n")
+
         nx = self.satellite.n_x
         nu = self.satellite.n_u
         np = self.satellite.n_p
