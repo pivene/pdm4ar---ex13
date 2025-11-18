@@ -80,6 +80,7 @@ class SatelliteAgent(Agent):
 
         the time spent in this method is **not** considered in the score.
         """
+        print("Inizio simulazione")
         self.myname = init_sim_obs.my_name
         self.sg = init_sim_obs.model_geometry
         self.sp = init_sim_obs.model_params
@@ -99,7 +100,11 @@ class SatelliteAgent(Agent):
         # TO DO: Implement Compute Initial Trajectory#
         ##############################################
 
+        # Don't think there's nothing to do here. At the beginning of the simulation, we compute the the full planned trajectory,
+        # which is then recomputed only if necessary.
+        print("Chiamo compute trajectory")
         self.cmds_plan, self.state_traj = self.planner.compute_trajectory(self.init_state, self.goal_state)
+        print("Fine calcolo traiettoria iniziale, procedo con osservazioni")
 
     def get_commands(self, sim_obs: SimObservations) -> SatelliteCommands:
         """
@@ -115,7 +120,10 @@ class SatelliteAgent(Agent):
 
         Do **not** modify the signature of this method.
         """
-        current_state = sim_obs.players[self.myname].state
+        c_state = sim_obs.players[self.myname].state
+        assert isinstance(c_state, SatelliteState)
+        current_state = c_state
+
         self.actual_trajectory.append(current_state)
         expected_state = self.state_traj.at_interp(sim_obs.time)
 
@@ -123,9 +131,19 @@ class SatelliteAgent(Agent):
         if Config.PLOT and int(10 * sim_obs.time) % 25 == 0:
             plot_traj(self.state_traj, self.actual_trajectory)
 
-        ####################################
-        # TO DO: Implement scheme to replan#
-        ####################################
+        pos_tol = 0.5
+        dir_tol = 0.5
+
+        dx = current_state.x - expected_state.x
+        dy = current_state.y - expected_state.y
+        dpsi = current_state.psi - expected_state.psi
+
+        pos_error = (dx**2 + dy**2) ** 0.5
+        angle_error = abs(dpsi)
+
+        if pos_error > pos_tol or angle_error > dir_tol:
+            print("Replan")
+            self.cmds_plan, self.state_traj = self.planner.compute_trajectory(current_state, self.goal_state)
 
         # ZeroOrderHold
         # cmds = self.cmds_plan.at_or_previous(sim_obs.time)

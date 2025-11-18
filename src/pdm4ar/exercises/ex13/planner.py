@@ -25,7 +25,7 @@ class SolverParameters:
     """
 
     # Cvxpy solver parameters
-    solver: str = "ECOS"  # specify solver to use
+    solver: str = "CLARABEL"  # specify solver to use
     verbose_solver: bool = False  # if True, the optimization steps are shown
     max_iterations: int = 100  # max algorithm iterations
 
@@ -120,6 +120,10 @@ class SatellitePlanner:
 
         # self.X_bar, self.U_bar, self.p_bar = self.initial_guess()
 
+        self.X_bar = np.zeros((self.satellite.n_x, self.params.K))
+        self.U_bar = np.zeros((self.satellite.n_u, self.params.K))
+        self.p_bar = np.zeros(self.satellite.n_p)
+
         # Constraints
         constraints = self._get_constraints()
 
@@ -153,15 +157,21 @@ class SatellitePlanner:
         self._set_goal(init_vec, goal_vec)
 
         # Initial reference
+        print("Inizio calcolo initial guess")
         self.X_bar, self.U_bar, self.p_bar = self.initial_guess(init_vec, goal_vec)
+        print("Fine calcolo initial guess")
 
         for i in range(self.params.max_iterations):
+            print("Iterazione ", i)
+            print("Inizio convexification")
             self._convexification()
-
+            print("Fine convexification")
+            print("Inizio risoluzione")
             try:
                 error = self.problem.solve(verbose=self.params.verbose_solver, solver=self.params.solver)
             except cvx.SolverError:
                 print(f"SolverError: {self.params.solver} failed to solve the problem.")
+            print("Fine risoluzione")
 
             rho, accept = self._update_trust_region()
 
@@ -183,22 +193,19 @@ class SatellitePlanner:
         n_u = self.satellite.n_u
         n_p = self.satellite.n_p
 
-        P = self.problem_parameters
-        X_bar = P["X_bar"]
-        U_bar = P["U_bar"]
-        p_bar = P["p_bar"]
+        X_bar = np.zeros((n_x, K))
+        U_bar = np.zeros((n_u, K))
+        p_bar = np.zeros(n_p)
 
         # Linear interpolation
         for k in range(K):
             tau = k / (K - 1)
             X_bar[:, k] = (1 - tau) * init_vec + tau * goal_vec
 
-        U_bar[:, :] = np.zeros((2, K))
-
         # Initial guess for time
-        p_bar = 10
+        p_bar[0] = 10
 
-        return X_bar, U_bar, np.array(p_bar)
+        return X_bar, U_bar, p_bar
 
     def _set_goal(self, init_state, goal_state):
         """
@@ -249,10 +256,6 @@ class SatellitePlanner:
         problem_parameters = {
             "init_state": cvx.Parameter(n_x),
             "goal_state": cvx.Parameter(n_x),
-            # reference solution
-            "X_bar": [cvx.Parameter(n_x) for _ in range(K)],
-            "U_bar": [cvx.Parameter(n_u) for _ in range(K)],
-            "p_bar": cvx.Parameter(n_p),
             # linearized dynamics parameters
             "A_bar": [cvx.Parameter((n_x, n_x)) for _ in range(K - 1)],
             "B_minus_bar": [cvx.Parameter((n_x, n_u)) for _ in range(K - 1)],
@@ -398,32 +401,47 @@ class SatellitePlanner:
         # HINT: be aware that the matrices returned by calculate_discretization are flattened in F order (this way affect your code later when you use them)
         # Therefore the matrices need to be reshaped
 
-        print("\n--- DEBUG: shapes from FOH discretization ---")
-        print("A_bar[k] shape:", A_bar[0].shape)
-        print("B_plus_bar[k] shape:", B_plus_bar[0].shape)
-        print("B_minus_bar[k] shape:", B_minus_bar[0].shape)
-        print("F_bar[k] shape:", F_bar[0].shape)
-        print("r_bar[k] shape:", r_bar[0].shape)
-        print("--------------------------------------------\n")
-
-        nx = self.satellite.n_x
-        nu = self.satellite.n_u
-        np = self.satellite.n_p
+        n_x = self.satellite.n_x
+        n_u = self.satellite.n_u
+        n_p = self.satellite.n_p
 
         # Update dynamics parameters
         for k in range(K - 1):
-            P["A_bar"][k].value = A_bar[k].reshape(nx, nx)
-            P["B_plus_bar"][k].value = B_plus_bar[k].reshape(nx, nu)
-            P["B_minus_bar"][k].value = B_minus_bar[k].reshape(nx, nu)
-            P["F_bar"][k].value = F_bar[k].reshape(nx, np)
-            P["r_bar"][k].value = r_bar[k].reshape(nx)
+            P["A_bar"][k].value = A_bar[:, k].reshape(n_x, n_x)
+            P["B_plus_bar"][k].value = B_plus_bar[:, k].reshape(n_x, n_u)
+            P["B_minus_bar"][k].value = B_minus_bar[:, k].reshape(n_x, n_u)
+            P["F_bar"][k].value = F_bar[:, k].reshape(n_x, n_p)
+            P["r_bar"][k].value = r_bar[:, k]
 
-        # Update reference trajectory
+        # obstacles constraints convexification
+        obstacles_list = []
+        for planet in self.planets.values():
+            obstacles_list.append({"x": planet.center[0], "y": planet.center[1], "r": planet.radius})
+        sat_radius = (self.sg.w_half + self.sg.w_panel) * 1.1
         for k in range(K):
-            P["X_bar"][k].value = self.X_bar[:, k]
-            P["U_bar"][k].value = self.U_bar[:, k]
+            # get the relevant states at timestep k
+            bar_x = self.X_bar[0, k]
+            bar_y = self.X_bar[1, k]
+            for j, obs in enumerate(obstacles_list):
+                obs_x = obs["x"]
+                obs_y = obs["y"]
+                obs_r = obs["r"]
+                r_safe_sq = (sat_radius + obs_r) ** 2
+                dx = bar_x - obs_x
+                dy = bar_y - obs_y
+                C_val = np.zeros((1, n_x))
+                C_val[0, 0] = -2 * dx
+                C_val[0, 1] = -2 * dy
+                # something in the form [C_val[0, 0],C_val[0, 1], 0,0,0,0 ] so i can have a dot product later
+                P["C_coll"][k][j].value = C_val
 
-        P["p_bar"].value = self.p_bar
+                # do the same for G
+                P["G_coll"][k][j].value = np.zeros((1, n_p))
+                val_g = -(dx**2) - (dy**2) + r_safe_sq
+                # remember dx = xk - xobstacle and cval = -2 dx
+                c_dot_x = C_val[0, 0] * bar_x + C_val[0, 1] * bar_y
+                # sum the 2 components together
+                P["r_coll"][k][j].value = val_g - c_dot_x
 
     def _check_convergence(self) -> bool:
         """
