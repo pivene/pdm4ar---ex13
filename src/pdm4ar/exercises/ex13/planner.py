@@ -122,6 +122,10 @@ class SatellitePlanner:
         self.U_bar = np.zeros((self.satellite.n_u, self.params.K))
         self.p_bar = np.zeros(self.satellite.n_p)  # Assuming p is a scalar and np=1
 
+        self.X_bar = np.zeros((self.satellite.n_x, self.params.K))
+        self.U_bar = np.zeros((self.satellite.n_u, self.params.K))
+        self.p_bar = np.zeros(self.satellite.n_p)
+
         # Constraints
         constraints = self._get_constraints()
 
@@ -155,9 +159,13 @@ class SatellitePlanner:
         self._set_goal(init_vec, goal_vec)
 
         # Initial reference
+        print("Inizio calcolo initial guess")
         self.X_bar, self.U_bar, self.p_bar = self.initial_guess(init_vec, goal_vec)
+        print("Fine calcolo initial guess")
 
         for i in range(self.params.max_iterations):
+            print("Iterazione ", i)
+            print("Inizio convexification")
             self._convexification()
             try:
                 error = self.problem.solve(verbose=self.params.verbose_solver, solver=self.params.solver)
