@@ -11,5 +11,7 @@
     "[python]": {
         "editor.defaultFormatter": "ms-python.black-formatter",
         "editor.formatOnSave": true
-    }
+    },
+    "cursorpyright.analysis.autoImportCompletions": true,
+    "cursorpyright.analysis.typeCheckingMode": "basic"
 }

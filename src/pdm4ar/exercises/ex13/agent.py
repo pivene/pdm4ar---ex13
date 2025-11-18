@@ -141,10 +141,6 @@ class SatelliteAgent(Agent):
         pos_error = (dx**2 + dy**2) ** 0.5
         angle_error = abs(dpsi)
 
-        if pos_error > pos_tol or angle_error > dir_tol:
-            print("Replan")
-            self.cmds_plan, self.state_traj = self.planner.compute_trajectory(current_state, self.goal_state)
-
         # ZeroOrderHold
         # cmds = self.cmds_plan.at_or_previous(sim_obs.time)
         # FirstOrderHold
