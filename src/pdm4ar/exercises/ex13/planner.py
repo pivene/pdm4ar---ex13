@@ -25,7 +25,7 @@ class SolverParameters:
     """
 
     # Cvxpy solver parameters
-    solver: str = "ECOS"  # specify solver to use
+    solver: str = "CLARABEL"  # specify solver to use
     verbose_solver: bool = False  # if True, the optimization steps are shown
     max_iterations: int = 100  # max algorithm iterations
 
@@ -155,21 +155,18 @@ class SatellitePlanner:
         self._set_goal(init_vec, goal_vec)
 
         # Initial reference
-        # self.X_bar, self.U_bar, self.p_bar = self.initial_guess(init_vec, goal_vec)
+        self.X_bar, self.U_bar, self.p_bar = self.initial_guess(init_vec, goal_vec)
 
         for i in range(self.params.max_iterations):
             self._convexification()
-
             try:
                 error = self.problem.solve(verbose=self.params.verbose_solver, solver=self.params.solver)
             except cvx.SolverError:
                 print(f"SolverError: {self.params.solver} failed to solve the problem.")
-
-            rho, accept = self._update_trust_region()
-
             if self._check_convergence():
                 print("Converged")
                 break
+            rho, accept = self._update_trust_region()
 
         # Example data: sequence from array
         mycmds, mystates = self._extract_seq_from_array()
@@ -184,34 +181,25 @@ class SatellitePlanner:
         n_x = self.satellite.n_x
         n_u = self.satellite.n_u
         n_p = self.satellite.n_p
-
-        P = self.problem_parameters
-        X_bar = P["X_bar"]
-        U_bar = P["U_bar"]
-        p_bar = P["p_bar"]
-
+        X_bar = np.zeros((n_x, K))
+        U_bar = np.ones((n_u, K))
+        p_bar = np.zeros(n_p)
         # Linear interpolation
         for k in range(K):
             tau = k / (K - 1)
             X_bar[:, k] = (1 - tau) * init_vec + tau * goal_vec
-
-        U_bar[:, :] = np.zeros((2, K))
-
         # Initial guess for time
-        p_bar = 10
-
-        return X_bar, U_bar, np.array(p_bar)
+        p_bar[0] = 10
+        return X_bar, U_bar, p_bar
 
     def _set_goal(self, init_state, goal_state):
         """
         Sets goal for SCvx.
         """
         P = self.problem_parameters
-
         # Set initial and goal states
         P["init_state"].value = init_state
         P["goal_state"].value = goal_state
-
         # Set trust region radius
         P["eta_tr"].value = self.params.tr_radius
 
@@ -251,10 +239,6 @@ class SatellitePlanner:
         problem_parameters = {
             "init_state": cvx.Parameter(n_x),
             "goal_state": cvx.Parameter(n_x),
-            # reference solution
-            "X_bar": [cvx.Parameter(n_x) for _ in range(K)],
-            "U_bar": [cvx.Parameter(n_u) for _ in range(K)],
-            "p_bar": cvx.Parameter(n_p),
             # linearized dynamics parameters
             "A_bar": [cvx.Parameter((n_x, n_x)) for _ in range(K - 1)],
             "B_minus_bar": [cvx.Parameter((n_x, n_u)) for _ in range(K - 1)],
@@ -348,7 +332,7 @@ class SatellitePlanner:
             U <= self.sp.F_limits[1],
             # max_time
             p <= p_max,
-            p > 0,
+            p >= 0,
             # positive slack variables
             nu_tc >= 0,
             nu_s >= 0,
@@ -406,23 +390,16 @@ class SatellitePlanner:
             self.X_bar, self.U_bar, self.p_bar
         )
 
-        nx = self.satellite.n_x
-        nu = self.satellite.n_u
-        np = self.satellite.n_p
+        n_x = self.satellite.n_x
+        n_u = self.satellite.n_u
+        n_p = self.satellite.n_p
 
         for k in range(K - 1):
-            P["A_bar"][k].value = A_bar[:, k].reshape(nx, nx)
-            P["B_plus_bar"][k].value = B_plus_bar[:, k].reshape(nx, nu)
-            P["B_minus_bar"][k].value = B_minus_bar[:, k].reshape(nx, nu)
-            P["F_bar"][k].value = F_bar[:, k].reshape(nx, np)
+            P["A_bar"][k].value = A_bar[:, k].reshape(n_x, n_x)
+            P["B_plus_bar"][k].value = B_plus_bar[:, k].reshape(n_x, n_u)
+            P["B_minus_bar"][k].value = B_minus_bar[:, k].reshape(n_x, n_u)
+            P["F_bar"][k].value = F_bar[:, k].reshape(n_x, n_p)
             P["r_bar"][k].value = r_bar[:, k]
-
-        # Update reference trajectory
-        for k in range(K):
-            P["X_bar"][k].value = self.X_bar[:, k]
-            P["U_bar"][k].value = self.U_bar[:, k]
-
-        P["p_bar"].value = self.p_bar
 
         # I now want to convexify the costraints and get the matrices  c g  r'
         ###### CONVEXIFY OBSTACLES #######
@@ -442,14 +419,13 @@ class SatellitePlanner:
                 r_safe_sq = (sat_radius + obs_r) ** 2
                 dx = bar_x - obs_x
                 dy = bar_y - obs_y
-                C_val = numpy.zeros((1, nx))
+                C_val = np.zeros((1, n_x))
                 C_val[0, 0] = -2 * dx
                 C_val[0, 1] = -2 * dy
                 # something in the form [C_val[0, 0],C_val[0, 1], 0,0,0,0 ] so i can have a dot product later
                 P["C_coll"][k][j].value = C_val
-
                 # do the same for G
-                P["G_coll"][k][j].value = numpy.zeros((1, np))
+                P["G_coll"][k][j].value = np.zeros((1, n_p))
                 val_g = -(dx**2) - (dy**2) + r_safe_sq
                 # remember dx = xk - xobstacle and cval = -2 dx
                 c_dot_x = C_val[0, 0] * bar_x + C_val[0, 1] * bar_y
@@ -466,6 +442,9 @@ class SatellitePlanner:
         # Extract new optimized values, we have to use .value to get numeric values from the symbolic CVXPY variable
         X_star = self.variables["X"].value
         p_star = self.variables["p"].value
+
+        if X_star is None or p_star is None:
+            return False
 
         # Extract reference trajectory from previous iteration
         X_ref = self.X_bar
