@@ -393,7 +393,6 @@ class SatellitePlanner:
         # HINT: be aware that the matrices returned by calculate_discretization are flattened in F order (this way affect your code later when you use them)
         # Therefore the matrices need to be reshaped
 
-
         n_x = self.satellite.n_x
         n_u = self.satellite.n_u
         n_p = self.satellite.n_p
