@@ -1,7 +1,6 @@
 import ast
 from dataclasses import dataclass, field
 from typing import Union
-
 import cvxpy as cvx
 from dg_commons import PlayerName
 from dg_commons.seq import DgSampledSequence
@@ -11,7 +10,8 @@ from dg_commons.sim.models.satellite_structures import (
     SatelliteGeometry,
     SatelliteParameters,
 )
-
+import numpy
+from pdm4ar.exercises.ex13 import satellite
 from pdm4ar.exercises.ex13.discretization import *
 from pdm4ar.exercises_def.ex13.goal import SpaceshipTarget
 from pdm4ar.exercises_def.ex13.utils_params import PlanetParams, AsteroidParams
@@ -118,7 +118,9 @@ class SatellitePlanner:
         # Problem Parameters
         self.problem_parameters = self._get_problem_parameters()
 
-        # self.X_bar, self.U_bar, self.p_bar = self.initial_guess()
+        self.X_bar = np.zeros((self.satellite.n_x, self.params.K))
+        self.U_bar = np.zeros((self.satellite.n_u, self.params.K))
+        self.p_bar = np.zeros(self.satellite.n_p)  # Assuming p is a scalar and np=1
 
         # Constraints
         constraints = self._get_constraints()
@@ -153,7 +155,7 @@ class SatellitePlanner:
         self._set_goal(init_vec, goal_vec)
 
         # Initial reference
-        self.X_bar, self.U_bar, self.p_bar = self.initial_guess(init_vec, goal_vec)
+        # self.X_bar, self.U_bar, self.p_bar = self.initial_guess(init_vec, goal_vec)
 
         for i in range(self.params.max_iterations):
             self._convexification()
@@ -227,7 +229,7 @@ class SatellitePlanner:
             "X": cvx.Variable((n_x, K)),
             "U": cvx.Variable((n_u, K)),
             "p": cvx.Variable(n_p),
-            # slack
+            # slack, virtual control
             "nu": cvx.Variable((n_x, K - 1)),
             "nu_s": cvx.Variable((num_obstacles, K)),
             "nu_ic": cvx.Variable(n_x),
@@ -346,6 +348,7 @@ class SatellitePlanner:
             U <= self.sp.F_limits[1],
             # max_time
             p <= p_max,
+            p > 0,
             # positive slack variables
             nu_tc >= 0,
             nu_s >= 0,
@@ -398,25 +401,21 @@ class SatellitePlanner:
         # HINT: be aware that the matrices returned by calculate_discretization are flattened in F order (this way affect your code later when you use them)
         # Therefore the matrices need to be reshaped
 
-        print("\n--- DEBUG: shapes from FOH discretization ---")
-        print("A_bar[k] shape:", A_bar[0].shape)
-        print("B_plus_bar[k] shape:", B_plus_bar[0].shape)
-        print("B_minus_bar[k] shape:", B_minus_bar[0].shape)
-        print("F_bar[k] shape:", F_bar[0].shape)
-        print("r_bar[k] shape:", r_bar[0].shape)
-        print("--------------------------------------------\n")
+        # ... (Calcolo della discretizzazione)
+        A_bar, B_plus_bar, B_minus_bar, F_bar, r_bar = self.integrator.calculate_discretization(
+            self.X_bar, self.U_bar, self.p_bar
+        )
 
         nx = self.satellite.n_x
         nu = self.satellite.n_u
         np = self.satellite.n_p
 
-        # Update dynamics parameters
         for k in range(K - 1):
-            P["A_bar"][k].value = A_bar[k].reshape(nx, nx)
-            P["B_plus_bar"][k].value = B_plus_bar[k].reshape(nx, nu)
-            P["B_minus_bar"][k].value = B_minus_bar[k].reshape(nx, nu)
-            P["F_bar"][k].value = F_bar[k].reshape(nx, np)
-            P["r_bar"][k].value = r_bar[k].reshape(nx)
+            P["A_bar"][k].value = A_bar[:, k].reshape(nx, nx)
+            P["B_plus_bar"][k].value = B_plus_bar[:, k].reshape(nx, nu)
+            P["B_minus_bar"][k].value = B_minus_bar[:, k].reshape(nx, nu)
+            P["F_bar"][k].value = F_bar[:, k].reshape(nx, np)
+            P["r_bar"][k].value = r_bar[:, k]
 
         # Update reference trajectory
         for k in range(K):
@@ -424,6 +423,38 @@ class SatellitePlanner:
             P["U_bar"][k].value = self.U_bar[:, k]
 
         P["p_bar"].value = self.p_bar
+
+        # I now want to convexify the costraints and get the matrices  c g  r'
+        ###### CONVEXIFY OBSTACLES #######
+        obstacles_list = []
+        for planet in self.planets.values():
+            obstacles_list.append({"x": planet.center[0], "y": planet.center[1], "r": planet.radius})
+        sat_radius = (self.sg.w_half + self.sg.w_panel) * 1.1
+        # get the convexification of the obstacle for every time step
+        for k in range(K):
+            # get the relevant states at timestep k
+            bar_x = self.X_bar[0, k]
+            bar_y = self.X_bar[1, k]
+            for j, obs in enumerate(obstacles_list):
+                obs_x = obs["x"]
+                obs_y = obs["y"]
+                obs_r = obs["r"]
+                r_safe_sq = (sat_radius + obs_r) ** 2
+                dx = bar_x - obs_x
+                dy = bar_y - obs_y
+                C_val = numpy.zeros((1, nx))
+                C_val[0, 0] = -2 * dx
+                C_val[0, 1] = -2 * dy
+                # something in the form [C_val[0, 0],C_val[0, 1], 0,0,0,0 ] so i can have a dot product later
+                P["C_coll"][k][j].value = C_val
+
+                # do the same for G
+                P["G_coll"][k][j].value = numpy.zeros((1, np))
+                val_g = -(dx**2) - (dy**2) + r_safe_sq
+                # remember dx = xk - xobstacle and cval = -2 dx
+                c_dot_x = C_val[0, 0] * bar_x + C_val[0, 1] * bar_y
+                # sum the 2 components together
+                P["r_coll"][k][j].value = val_g - c_dot_x
 
     def _check_convergence(self) -> bool:
         """
