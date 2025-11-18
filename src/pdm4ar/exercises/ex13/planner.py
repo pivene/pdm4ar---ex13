@@ -13,6 +13,7 @@ from dg_commons.sim.models.satellite_structures import (
 )
 
 from pdm4ar.exercises.ex13.discretization import *
+from pdm4ar.exercises_def.ex13.goal import SpaceshipTarget
 from pdm4ar.exercises_def.ex13.utils_params import PlanetParams, AsteroidParams
 
 
@@ -40,6 +41,14 @@ class SolverParameters:
     rho_2: float = 0.9  # trust region 2
     alpha: float = 2.0  # div factor trust region update
     beta: float = 3.2  # mult factor trust region update
+
+    # tolerances
+    pos_tol: float = 0.5
+    dir_tol: float = 0.1
+    vel_tol: float = 0.2
+
+    # Set max time
+    p_max: float = 100
 
     # Discretization constants
     K: int = 50  # number of discretization steps
@@ -109,7 +118,7 @@ class SatellitePlanner:
         # Problem Parameters
         self.problem_parameters = self._get_problem_parameters()
 
-        #self.X_bar, self.U_bar, self.p_bar = self.initial_guess()
+        # self.X_bar, self.U_bar, self.p_bar = self.initial_guess()
 
         # Constraints
         constraints = self._get_constraints()
@@ -127,7 +136,7 @@ class SatellitePlanner:
         Compute a trajectory from init_state to goal_state.
         """
         # for SCvx it would follow a logic similar to:
-        
+
         # initial guess interpolation
         # while stopping criterion not satisfied
         #     convexify
@@ -136,28 +145,13 @@ class SatellitePlanner:
         #     update trust region
         #     update stopping criterion
 
-
         # Convert init and goal state to arrays
-        init_vec = np.array([
-            init_state.x,
-            init_state.y,
-            init_state.psi,
-            init_state.vx,
-            init_state.vy,
-            init_state.dpsi
-        ])
-        goal_vec = np.array([
-            goal_state.x,
-            goal_state.y,
-            goal_state.psi,
-            goal_state.vx,
-            goal_state.vy,
-            goal_state.dpsi
-        ])
+        init_vec = np.array([init_state.x, init_state.y, init_state.psi, init_state.vx, init_state.vy, init_state.dpsi])
+        goal_vec = np.array([goal_state.x, goal_state.y, goal_state.psi, goal_state.vx, goal_state.vy, goal_state.dpsi])
 
         # Assign values to problem parameters
         self._set_goal(init_vec, goal_vec)
-        
+
         # Initial reference
         self.X_bar, self.U_bar, self.p_bar = self.initial_guess(init_vec, goal_vec)
 
@@ -174,12 +168,11 @@ class SatellitePlanner:
             if self._check_convergence():
                 print("Converged")
                 break
-        
+
         # Example data: sequence from array
         mycmds, mystates = self._extract_seq_from_array()
 
         return mycmds, mystates
-
 
     def initial_guess(self, init_vec, goal_vec) -> tuple[NDArray, NDArray, NDArray]:
         """
@@ -190,20 +183,22 @@ class SatellitePlanner:
         n_u = self.satellite.n_u
         n_p = self.satellite.n_p
 
-        X = np.zeros((n_x, K))
-        U = np.zeros((n_u, K))
-        p = np.zeros((n_p))
+        P = self.problem_parameters
+        X_bar = P["X_bar"]
+        U_bar = P["U_bar"]
+        p_bar = P["p_bar"]
 
         # Linear interpolation
         for k in range(K):
             tau = k / (K - 1)
-            X[:, k] = (1 - tau) * init_vec + tau * goal_vec
-        
+            X_bar[:, k] = (1 - tau) * init_vec + tau * goal_vec
+
+        U_bar[:, :] = np.zeros((2, K))
+
         # Initial guess for time
-        p[:] = 10
+        p_bar = 10
 
-        return X, U, p
-
+        return X_bar, U_bar, np.array(p_bar)
 
     def _set_goal(self, init_state, goal_state):
         """
@@ -215,17 +210,8 @@ class SatellitePlanner:
         P["init_state"].value = init_state
         P["goal_state"].value = goal_state
 
-        # Set tolerances (can be tuned)
-        P["pos_tol"].value = 0.1
-        P["dir_tol"].value = 0.1
-        P["vel_tol"].value = 0.1
-
-        # Set max time
-        P["p_max"].value = 100
-
         # Set trust region radius
         P["eta_tr"].value = self.params.tr_radius
-
 
     def _get_variables(self) -> dict:
         """
@@ -250,7 +236,6 @@ class SatellitePlanner:
 
         return variables
 
-
     def _get_problem_parameters(self) -> dict:
         """
         Define problem parameters for SCvx.
@@ -265,15 +250,9 @@ class SatellitePlanner:
             "init_state": cvx.Parameter(n_x),
             "goal_state": cvx.Parameter(n_x),
             # reference solution
-            "X_ref": [cvx.Parameter(n_x) for _ in range(K)],
-            "U_ref": [cvx.Parameter(n_u) for _ in range(K)],
-            "p_ref": cvx.Parameter(n_p),
-            # tolerances
-            "pos_tol": cvx.Parameter(nonneg=True),
-            "dir_tol": cvx.Parameter(nonneg=True),
-            "vel_tol": cvx.Parameter(nonneg=True),
-            # max_time
-            "p_max": cvx.Parameter(nonneg=True),
+            "X_bar": [cvx.Parameter(n_x) for _ in range(K)],
+            "U_bar": [cvx.Parameter(n_u) for _ in range(K)],
+            "p_bar": cvx.Parameter(n_p),
             # linearized dynamics parameters
             "A_bar": [cvx.Parameter((n_x, n_x)) for _ in range(K - 1)],
             "B_minus_bar": [cvx.Parameter((n_x, n_u)) for _ in range(K - 1)],
@@ -290,7 +269,6 @@ class SatellitePlanner:
 
         return problem_parameters
 
-
     def _get_constraints(self) -> list[cvx.Constraint]:
         """
         Define constraints for SCvx.
@@ -299,6 +277,10 @@ class SatellitePlanner:
         n_u = self.satellite.n_u
         n_p = self.satellite.n_p
         K = self.params.K
+        pos_tol = self.params.pos_tol
+        dir_tol = self.params.dir_tol
+        vel_tol = self.params.vel_tol
+        p_max = self.params.p_max
 
         P = self.problem_parameters
         goal = P["goal_state"]
@@ -338,9 +320,9 @@ class SatellitePlanner:
         # trust region constraints
         tr_constraints = []
         for k in range(K):
-            dx = X[:, k] - P["X_ref"][k]
-            du = U[:, k] - P["U_ref"][k]
-            dp = p - P["p_ref"]
+            dx = X[:, k] - self.X_bar[:, k]
+            du = U[:, k] - self.U_bar[:, k]
+            dp = p - self.p_bar
             tr_constraints.append(cvx.norm(dx, 2) + cvx.norm(du, 2) + cvx.norm(dp, 2) <= eta_tr)
 
         # general constraints
@@ -349,13 +331,13 @@ class SatellitePlanner:
             X[:, 0] - P["init_state"] == nu_ic,
             # final state
             # pose
-            cvx.abs(X[0, K - 1] - goal[0]) <= P["pos_tol"] + nu_tc[0],
-            cvx.abs(X[1, K - 1] - goal[1]) <= P["pos_tol"] + nu_tc[1],
-            cvx.abs(X[2, K - 1] - goal[2]) <= P["dir_tol"] + nu_tc[2],
+            cvx.abs(X[0, K - 1] - goal[0]) <= pos_tol + nu_tc[0],
+            cvx.abs(X[1, K - 1] - goal[1]) <= pos_tol + nu_tc[1],
+            cvx.abs(X[2, K - 1] - goal[2]) <= dir_tol + nu_tc[2],
             # velocity
-            cvx.abs(X[3, K - 1] - goal[3]) <= P["vel_tol"] + nu_tc[3],
-            cvx.abs(X[4, K - 1] - goal[4]) <= P["vel_tol"] + nu_tc[4],
-            cvx.abs(X[5, K - 1] - goal[5]) <= P["vel_tol"] + nu_tc[5],
+            cvx.abs(X[3, K - 1] - goal[3]) <= vel_tol + nu_tc[3],
+            cvx.abs(X[4, K - 1] - goal[4]) <= vel_tol + nu_tc[4],
+            cvx.abs(X[5, K - 1] - goal[5]) <= vel_tol + nu_tc[5],
             # control inputs at start and goal
             U[:, 0] == 0,
             U[:, K - 1] == 0,
@@ -363,7 +345,7 @@ class SatellitePlanner:
             U >= self.sp.F_limits[0],
             U <= self.sp.F_limits[1],
             # max_time
-            p <= P["p_max"],
+            p <= p_max,
             # positive slack variables
             nu_tc >= 0,
             nu_s >= 0,
@@ -372,7 +354,6 @@ class SatellitePlanner:
         constraints = gen_constraints + dynamic_constraints + obstacles_constraints + tr_constraints
 
         return constraints
-
 
     def _get_objective(self) -> Union[cvx.Minimize, cvx.Maximize]:
         """
@@ -400,7 +381,6 @@ class SatellitePlanner:
         objective = self.params.weight_p @ p + slack_cost + 0.5 * travelled_distance + 0.5 * average_input
 
         return cvx.Minimize(objective)
-
 
     def _convexification(self):
         """
@@ -431,20 +411,19 @@ class SatellitePlanner:
         np = self.satellite.n_p
 
         # Update dynamics parameters
-        for k in range(K-1):
+        for k in range(K - 1):
             P["A_bar"][k].value = A_bar[k].reshape(nx, nx)
             P["B_plus_bar"][k].value = B_plus_bar[k].reshape(nx, nu)
             P["B_minus_bar"][k].value = B_minus_bar[k].reshape(nx, nu)
             P["F_bar"][k].value = F_bar[k].reshape(nx, np)
             P["r_bar"][k].value = r_bar[k].reshape(nx)
-        
+
         # Update reference trajectory
         for k in range(K):
-            P["X_ref"][k].value = self.X_bar[:, k]
-            P["U_ref"][k].value = self.U_bar[:, k]
-        
-        P["p_ref"].value = self.p_bar
+            P["X_bar"][k].value = self.X_bar[:, k]
+            P["U_bar"][k].value = self.U_bar[:, k]
 
+        P["p_bar"].value = self.p_bar
 
     def _check_convergence(self) -> bool:
         """
@@ -463,10 +442,10 @@ class SatellitePlanner:
 
         # Compute the second stopping criterion from the slides with q=2 (euclidean norm)
         diff_p = np.linalg.norm(p_star - p_ref)
-        
-        diff_X = np.linalg.norm(X_star - X_ref, axis=0) # axis=0 to get norm over state dimension not over time
+
+        diff_X = np.linalg.norm(X_star - X_ref, axis=0)  # axis=0 to get norm over state dimension not over time
         max_diff_X = np.max(diff_X)
-        
+
         diff_tot = diff_p + max_diff_X
 
         return bool(diff_tot < eps)
@@ -505,7 +484,7 @@ class SatellitePlanner:
             # Slightly inaccurate -> shrink and accept
             eta = max(self.params.min_tr_radius, eta / self.params.alpha)
         # elif self.params.rho_1 < rho <= self.params.rho_2:
-            # Quite accurate -> keep trust region and accept
+        # Quite accurate -> keep trust region and accept
         elif self.params.rho_2 <= rho:
             # Conservative -> expand trust region and accept
             eta = min(self.params.max_tr_radius, eta * self.params.beta)
@@ -518,10 +497,10 @@ class SatellitePlanner:
             # Use .copy() so you dont loose the old reference trajectory
             self.X_bar = X_star.copy()
             self.U_bar = U_star.copy()
-            self.p_bar = p_star.copy()        
+            self.p_bar = p_star.copy()
 
         return rho, accept
-        
+
     def _J_lambda(self, X, U, p):
         """
         Compute the nonlinear cost.
@@ -550,23 +529,27 @@ class SatellitePlanner:
         x0_target = self.problem_parameters["init_state"].value
         init_violation = np.sum(np.abs(X[:, 0] - x0_target))
 
-        # Terminal condition violation 
+        # Terminal condition violation
         goal = self.problem_parameters["goal_state"].value
-        pos_tol = self.problem_parameters["pos_tol"].value
-        dir_tol = self.problem_parameters["dir_tol"].value
-        vel_tol = self.problem_parameters["vel_tol"].value
+        pos_tol = self.params.pos_tol
+        dir_tol = self.params.dir_tol
+        vel_tol = self.params.vel_tol
         X_terminal = X[:, -1]
-        
-        pos_err = np.linalg.norm([
-            np.maximum(np.abs(X_terminal[0] - goal[0]) - pos_tol, 0),
-            np.maximum(np.abs(X_terminal[1] - goal[1]) - pos_tol, 0)
-        ])
+
+        pos_err = np.linalg.norm(
+            [
+                np.maximum(np.abs(X_terminal[0] - goal[0]) - pos_tol, 0),
+                np.maximum(np.abs(X_terminal[1] - goal[1]) - pos_tol, 0),
+            ]
+        )
         dir_err = np.maximum(np.abs(X_terminal[2] - goal[2]) - dir_tol, 0)
-        vel_err = np.linalg.norm([
-            np.maximum(np.abs(X_terminal[3] - goal[3]) - vel_tol, 0),
-            np.maximum(np.abs(X_terminal[4] - goal[4]) - vel_tol, 0),
-            np.maximum(np.abs(X_terminal[5] - goal[5]) - vel_tol, 0)
-        ]) 
+        vel_err = np.linalg.norm(
+            [
+                np.maximum(np.abs(X_terminal[3] - goal[3]) - vel_tol, 0),
+                np.maximum(np.abs(X_terminal[4] - goal[4]) - vel_tol, 0),
+                np.maximum(np.abs(X_terminal[5] - goal[5]) - vel_tol, 0),
+            ]
+        )
 
         term_violation = pos_err + dir_err + vel_err
 
@@ -581,7 +564,7 @@ class SatellitePlanner:
                 r = P["r_coll"][k][j].value
                 val = c @ X[:, k] + g @ p + r
                 obs_violation += max(val, 0)
-        
+
         # Total penalty replacing the slack variables
         slack_penalty = lam * (dyn_violation + init_violation + term_violation + obs_violation)
 
@@ -589,7 +572,7 @@ class SatellitePlanner:
         J = time_cost + slack_penalty + 0.5 * travelled_distance + 0.5 * average_input
         return J
 
-    #@staticmethod
+    # @staticmethod
     def _extract_seq_from_array(self) -> tuple[DgSampledSequence[SatelliteCommands], DgSampledSequence[SatelliteState]]:
         """
         Create a DgSampledSequence from numpy arrays and timestamps.
@@ -606,7 +589,7 @@ class SatellitePlanner:
             F_left = float(self.U_bar[0, k])
             F_right = float(self.U_bar[1, k])
             cmds_list.append(SatelliteCommands(F_left, F_right))
-        
+
         cmds_seq = DgSampledSequence[SatelliteCommands](timestamps=ts, values=cmds_list)
 
         # States
