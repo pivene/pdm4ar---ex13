@@ -95,9 +95,9 @@ class SatelliteAgent(Agent):
             A, B, C, A1, A2, half_p_angle = init_sim_obs.goal.get_landing_constraint_points()
             init_sim_obs.goal.plot_landing_points(A, B, C, A1, A2)
 
-        #
-        # TODO: Implement Compute Initial Trajectory
-        #
+        ##############################################
+        # TO DO: Implement Compute Initial Trajectory#
+        ##############################################
 
         self.cmds_plan, self.state_traj = self.planner.compute_trajectory(self.init_state, self.goal_state)
 
@@ -123,15 +123,17 @@ class SatelliteAgent(Agent):
         if Config.PLOT and int(10 * sim_obs.time) % 25 == 0:
             plot_traj(self.state_traj, self.actual_trajectory)
 
-        #
-        # TODO: Implement scheme to replan
-        #
+        ####################################
+        # TO DO: Implement scheme to replan#
+        ####################################
 
         # ZeroOrderHold
         # cmds = self.cmds_plan.at_or_previous(sim_obs.time)
         # FirstOrderHold
         cmds = self.cmds_plan.at_interp(sim_obs.time)
 
-        return SatelliteCommands(
-            F_left=1, F_right=1
-        )  # can be replaced by SatelliteCommands(F_left=1, F_right=1) if you want to test constant commands
+        return cmds
+
+        # return SatelliteCommands(
+        #     F_left=1, F_right=1
+        # )  # can be replaced by SatelliteCommands(F_left=1, F_right=1) if you want to test constant commands
