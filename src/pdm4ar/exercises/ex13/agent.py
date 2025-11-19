@@ -103,9 +103,7 @@ class SatelliteAgent(Agent):
 
         # Don't think there's nothing to do here. At the beginning of the simulation, we compute the the full planned trajectory,
         # which is then recomputed only if necessary.
-        print("Chiamo compute trajectory")
         self.cmds_plan, self.state_traj = self.planner.compute_trajectory(self.init_state, self.goal_state)
-        print("Fine calcolo traiettoria iniziale, procedo con osservazioni")
 
     def get_commands(self, sim_obs: SimObservations) -> SatelliteCommands:
         """
