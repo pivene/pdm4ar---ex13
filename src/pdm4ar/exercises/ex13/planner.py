@@ -558,8 +558,8 @@ class SatellitePlanner:
             # shrink
             eta = max(self.params.min_tr_radius, eta / self.params.alpha)
         # elif self.params.rho_1 < rho <= self.params.rho_2:
-        # Quite accurate -> keep trust region and accept
-        elif self.params.rho_2 <= rho:
+        # keep - eta doesn't change, the solution is accepted
+        elif rho >= self.params.rho_2:
             # expand
             eta = min(self.params.max_tr_radius, eta * self.params.beta)
 
