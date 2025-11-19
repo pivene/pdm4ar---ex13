@@ -541,7 +541,7 @@ class SatellitePlanner:
         J_star = float(self._J_lambda(X_star, U_star, p_star))
 
         den = J_bar - L_star
-        if den == 0:
+        if den <= 0:
             rho = 0.0
         else:
             rho = (J_bar - J_star) / den
