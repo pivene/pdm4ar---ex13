@@ -164,6 +164,7 @@ class SatellitePlanner:
                 X_star = self.variables["X"].value
                 U_star = self.variables["U"].value
                 p_star = self.variables["p"].value
+
                 if X_star is not None and U_star is not None and p_star is not None:
                     self.X_bar = X_star.copy()
                     self.U_bar = U_star.copy()
@@ -398,10 +399,10 @@ class SatellitePlanner:
         n_p = self.satellite.n_p
 
         for k in range(K - 1):
-            P["A_bar"][k].value = A_bar[:, k].reshape(n_x, n_x)
-            P["B_plus_bar"][k].value = B_plus_bar[:, k].reshape(n_x, n_u)
-            P["B_minus_bar"][k].value = B_minus_bar[:, k].reshape(n_x, n_u)
-            P["F_bar"][k].value = F_bar[:, k].reshape(n_x, n_p)
+            P["A_bar"][k].value = A_bar[:, k].reshape((n_x, n_x), order="F")
+            P["B_plus_bar"][k].value = B_plus_bar[:, k].reshape((n_x, n_u), order="F")
+            P["B_minus_bar"][k].value = B_minus_bar[:, k].reshape((n_x, n_u), order="F")
+            P["F_bar"][k].value = F_bar[:, k].reshape((n_x, n_p), order="F")
             P["r_bar"][k].value = r_bar[:, k]
 
         sat_radius = (self.sg.w_half + self.sg.w_panel) * 1.1
