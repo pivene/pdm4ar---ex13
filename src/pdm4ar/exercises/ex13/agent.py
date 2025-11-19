@@ -81,6 +81,7 @@ class SatelliteAgent(Agent):
         the time spent in this method is **not** considered in the score.
         """
         print("Inizio simulazione")
+        self.actual_trajectory = []
         self.myname = init_sim_obs.my_name
         self.sg = init_sim_obs.model_geometry
         self.sp = init_sim_obs.model_params

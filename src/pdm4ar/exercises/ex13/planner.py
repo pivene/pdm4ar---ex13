@@ -1,6 +1,7 @@
 import ast
 from dataclasses import dataclass, field
 from typing import Union
+from typing import Optional
 import cvxpy as cvx
 from dg_commons import PlayerName
 from dg_commons.seq import DgSampledSequence
@@ -10,7 +11,7 @@ from dg_commons.sim.models.satellite_structures import (
     SatelliteGeometry,
     SatelliteParameters,
 )
-import numpy
+import numpy as np
 from pdm4ar.exercises.ex13 import satellite
 from pdm4ar.exercises.ex13.discretization import *
 from pdm4ar.exercises_def.ex13.goal import SpaceshipTarget
@@ -25,7 +26,7 @@ class SolverParameters:
     """
 
     # Cvxpy solver parameters
-    solver: str = "CLARABEL"  # specify solver to use
+    solver: str = "ECOS"  # specify solver to use
     verbose_solver: bool = False  # if True, the optimization steps are shown
     max_iterations: int = 100  # max algorithm iterations
 
@@ -67,6 +68,7 @@ class SatellitePlanner:
     sg: SatelliteGeometry
     sp: SatelliteParameters
     params: SolverParameters
+    problem: Optional[cvx.Problem]
 
     # Simpy variables
     x: spy.Matrix
@@ -120,20 +122,10 @@ class SatellitePlanner:
 
         self.X_bar = np.zeros((self.satellite.n_x, self.params.K))
         self.U_bar = np.zeros((self.satellite.n_u, self.params.K))
-        self.p_bar = np.zeros(self.satellite.n_p)  # Assuming p is a scalar and np=1
-
-        self.X_bar = np.zeros((self.satellite.n_x, self.params.K))
-        self.U_bar = np.zeros((self.satellite.n_u, self.params.K))
         self.p_bar = np.zeros(self.satellite.n_p)
 
-        # Constraints
-        constraints = self._get_constraints()
-
-        # Objective
-        objective = self._get_objective()
-
         # Cvx Optimisation Problem
-        self.problem = cvx.Problem(objective, constraints)
+        self.problem = None
 
     def compute_trajectory(
         self, init_state: SatelliteState, goal_state: DynObstacleState
@@ -167,12 +159,24 @@ class SatellitePlanner:
             print("Iterazione ", i)
             print("Inizio convexification")
             self._convexification()
+            constraints = self._get_constraints()
+            objective = self._get_objective()
+            self.problem = cvx.Problem(objective, constraints)
             try:
                 error = self.problem.solve(verbose=self.params.verbose_solver, solver=self.params.solver)
             except cvx.SolverError:
                 print(f"SolverError: {self.params.solver} failed to solve the problem.")
+                break
+
             if self._check_convergence():
                 print("Converged")
+                X_star = self.variables["X"].value
+                U_star = self.variables["U"].value
+                p_star = self.variables["p"].value
+                if X_star is not None and U_star is not None and p_star is not None:
+                    self.X_bar = X_star.copy()
+                    self.U_bar = U_star.copy()
+                    self.p_bar = p_star.copy()
                 break
             rho, accept = self._update_trust_region()
 
@@ -190,7 +194,7 @@ class SatellitePlanner:
         n_u = self.satellite.n_u
         n_p = self.satellite.n_p
         X_bar = np.zeros((n_x, K))
-        U_bar = np.ones((n_u, K))
+        U_bar = np.zeros((n_u, K))
         p_bar = np.zeros(n_p)
         # Linear interpolation
         for k in range(K):
@@ -404,18 +408,16 @@ class SatellitePlanner:
             P["F_bar"][k].value = F_bar[:, k].reshape(n_x, n_p)
             P["r_bar"][k].value = r_bar[:, k]
 
-        # I now want to convexify the costraints and get the matrices  c g  r'
-        ###### CONVEXIFY OBSTACLES #######
-        obstacles_list = []
-        for planet in self.planets.values():
-            obstacles_list.append({"x": planet.center[0], "y": planet.center[1], "r": planet.radius})
         sat_radius = (self.sg.w_half + self.sg.w_panel) * 1.1
+        # planets
+        planets_list = []
+        for planet in self.planets.values():
+            planets_list.append({"x": planet.center[0], "y": planet.center[1], "r": planet.radius})
         # get the convexification of the obstacle for every time step
         for k in range(K):
-            # get the relevant states at timestep k
             bar_x = self.X_bar[0, k]
             bar_y = self.X_bar[1, k]
-            for j, obs in enumerate(obstacles_list):
+            for j, obs in enumerate(planets_list):
                 obs_x = obs["x"]
                 obs_y = obs["y"]
                 obs_r = obs["r"]
@@ -425,15 +427,61 @@ class SatellitePlanner:
                 C_val = np.zeros((1, n_x))
                 C_val[0, 0] = -2 * dx
                 C_val[0, 1] = -2 * dy
-                # something in the form [C_val[0, 0],C_val[0, 1], 0,0,0,0 ] so i can have a dot product later
+                # C
                 P["C_coll"][k][j].value = C_val
-                # do the same for G
+                # G
                 P["G_coll"][k][j].value = np.zeros((1, n_p))
                 val_g = -(dx**2) - (dy**2) + r_safe_sq
-                # remember dx = xk - xobstacle and cval = -2 dx
+                # r
                 c_dot_x = C_val[0, 0] * bar_x + C_val[0, 1] * bar_y
-                # sum the 2 components together
                 P["r_coll"][k][j].value = val_g - c_dot_x
+
+        # asteroids
+        asteroids_list = []
+        for asteroid in self.asteroids.values():
+            asteroids_list.append(
+                {
+                    "x0": asteroid.start[0],
+                    "y0": asteroid.start[1],
+                    "vx": asteroid.velocity[0],
+                    "vy": asteroid.velocity[1],
+                    "r": asteroid.radius,
+                }
+            )
+        n_planets = len(self.planets)
+        # get the convexification of the obstacle for every time step
+        for k in range(K):
+            tau_k = k / (K - 1)
+            t_k = tau_k * float(self.p_bar[0])
+            bar_x = self.X_bar[0, k]
+            bar_y = self.X_bar[1, k]
+            for j, obs in enumerate(asteroids_list):
+                idx = n_planets + j
+                obs_x0 = obs["x0"]
+                obs_y0 = obs["y0"]
+                obs_vx = obs["vx"]
+                obs_vy = obs["vy"]
+                obs_r = obs["r"]
+                # current center coordinates
+                obs_x = obs_x0 + obs_vx * t_k
+                obs_y = obs_y0 + obs_vy * t_k
+                r_safe_sq = (sat_radius + obs_r) ** 2
+                dx = bar_x - obs_x
+                dy = bar_y - obs_y
+                C_val = np.zeros((1, n_x))
+                C_val[0, 0] = -2 * dx
+                C_val[0, 1] = -2 * dy
+                # C
+                P["C_coll"][k][idx].value = C_val
+                # G
+                val_g = -(dx**2) - (dy**2) + r_safe_sq
+                dp = -2 * tau_k * (dx * obs_vx + dy * obs_vy)
+                G_val = np.zeros((1, n_p))
+                G_val[0, 0] = -dp
+                P["G_coll"][k][idx].value = G_val
+                # r
+                c_dot_x = C_val[0, 0] * bar_x + C_val[0, 1] * bar_y
+                P["r_coll"][k][idx].value = val_g - c_dot_x - G_val[0, 0] * float(self.p_bar[0])
 
     def _check_convergence(self) -> bool:
         """
@@ -467,8 +515,25 @@ class SatellitePlanner:
         """
         Update trust region radius.
         """
+        assert self.problem is not None
+        status = self.problem.status
+        val = self.problem.value
+
+        if val is None:
+            print("[TR] Warning: problem.value is None despite status", status)
+            eta = self.problem_parameters["eta_tr"].value
+            eta = max(self.params.min_tr_radius, eta / self.params.alpha)
+            self.problem_parameters["eta_tr"].value = eta
+            return 0.0, False
+
+        if not isinstance(val, (int, float)):
+            raise TypeError(f"Unexpected type for problem.value: {type(val)}")
+
+        # Linear predicted cost
+        L_star = float(val)
+
         # Nonlinear cost of reference trajectory
-        J_bar = self._J_lambda(self.X_bar, self.U_bar, self.p_bar)
+        J_bar = float(self._J_lambda(self.X_bar, self.U_bar, self.p_bar))
 
         # Extract new optimized values, we have to use .value to get numeric values from the symbolic CVXPY variable
         X_star = self.variables["X"].value
@@ -476,38 +541,37 @@ class SatellitePlanner:
         p_star = self.variables["p"].value
 
         # Nonlinear cost of optimized trajectory
-        J_star = self._J_lambda(X_star, U_star, p_star)
+        J_star = float(self._J_lambda(X_star, U_star, p_star))
 
-        # Linear predicted cost
-        L_star = self.problem.value
-
-        # Compute convexification accuracy
-        rho = (J_bar - J_star) / (J_bar - L_star)
+        den = J_bar - L_star
+        if den == 0:
+            rho = 0.0
+        else:
+            rho = (J_bar - J_star) / den
 
         # Current trust region radius
         eta = self.problem_parameters["eta_tr"].value
 
-        # Trust region update rule
+        # Trust region radius update
         accept = True
         if rho <= self.params.rho_0:
-            # Very inaccurate -> shrink and reject
+            # reject
             eta = max(self.params.min_tr_radius, eta / self.params.alpha)
             accept = False
         elif self.params.rho_0 < rho <= self.params.rho_1:
-            # Slightly inaccurate -> shrink and accept
+            # shrink
             eta = max(self.params.min_tr_radius, eta / self.params.alpha)
         # elif self.params.rho_1 < rho <= self.params.rho_2:
         # Quite accurate -> keep trust region and accept
         elif self.params.rho_2 <= rho:
-            # Conservative -> expand trust region and accept
+            # expand
             eta = min(self.params.max_tr_radius, eta * self.params.beta)
 
-        # Assign updated trust region radius
+        # update tr radius
         self.problem_parameters["eta_tr"].value = eta
 
         # Update reference trajectory if accepted
         if accept:
-            # Use .copy() so you dont loose the old reference trajectory
             self.X_bar = X_star.copy()
             self.U_bar = U_star.copy()
             self.p_bar = p_star.copy()
@@ -528,7 +592,7 @@ class SatellitePlanner:
         average_input = np.sum(np.abs(U)) / K
 
         # Time cost component
-        time_cost = self.params.weight_p @ p
+        time_cost = float(self.params.weight_p @ p)
 
         # Compute defects
         x0 = self.problem_parameters["init_state"].value
@@ -575,15 +639,15 @@ class SatellitePlanner:
                 c = P["C_coll"][k][j].value
                 g = P["G_coll"][k][j].value
                 r = P["r_coll"][k][j].value
-                val = c @ X[:, k] + g @ p + r
-                obs_violation += max(val, 0)
+                val = float(c @ X[:, k] + g @ p + r)
+                obs_violation += max(val, 0.0)
 
         # Total penalty replacing the slack variables
         slack_penalty = lam * (dyn_violation + init_violation + term_violation + obs_violation)
 
         # Final nonlinear cost
         J = time_cost + slack_penalty + 0.5 * travelled_distance + 0.5 * average_input
-        return J
+        return float(J)
 
     # @staticmethod
     def _extract_seq_from_array(self) -> tuple[DgSampledSequence[SatelliteCommands], DgSampledSequence[SatelliteState]]:
