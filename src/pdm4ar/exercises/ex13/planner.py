@@ -27,7 +27,7 @@ class SolverParameters:
 
     # Cvxpy solver parameters
     solver: str = "ECOS"  # specify solver to use
-    verbose_solver: bool = True  # if True, the optimization steps are shown
+    verbose_solver: bool = False  # if True, the optimization steps are shown
     max_iterations: int = 100  # max algorithm iterations
 
     # SCVX parameters (Add paper reference)
@@ -120,13 +120,6 @@ class SatellitePlanner:
         # Problem Parameters
         self.problem_parameters = self._get_problem_parameters()
 
-        self.X_bar = np.zeros((self.satellite.n_x, self.params.K))
-        self.U_bar = np.zeros((self.satellite.n_u, self.params.K))
-        self.p_bar = np.zeros(self.satellite.n_p)
-
-        # Cvx Optimisation Problem
-        self.problem = None
-
     def compute_trajectory(
         self, init_state: SatelliteState, goal_state: DynObstacleState
     ) -> tuple[DgSampledSequence[SatelliteCommands], DgSampledSequence[SatelliteState]]:
@@ -147,24 +140,20 @@ class SatellitePlanner:
         # Convert init and goal state to arrays
         init_vec = np.array([init_state.x, init_state.y, init_state.psi, init_state.vx, init_state.vy, init_state.dpsi])
         goal_vec = np.array([goal_state.x, goal_state.y, goal_state.psi, goal_state.vx, goal_state.vy, goal_state.dpsi])
+        self.problem_parameters["init_vec"].value = init_vec
+        self.problem_parameters["goal_vec"].value = goal_vec
 
         # Assign values to problem parameters
-        self._set_goal(init_vec, goal_vec)
+        self._set_goal()
 
         # Initial reference
-        print("Inizio calcolo initial guess")
-        self.X_bar, self.U_bar, self.p_bar = self.initial_guess(init_vec, goal_vec)
-        print("Fine calcolo initial guess")
+        self.X_bar, self.U_bar, self.p_bar = self.initial_guess()
+        constraints = self._get_constraints()
+        objective = self._get_objective()
+        self.problem = cvx.Problem(objective, constraints)
 
         for i in range(self.params.max_iterations):
-            print("Iterazione ", i)
-            print("Inizio convexification")
             self._convexification()
-            constraints = self._get_constraints()
-            objective = self._get_objective()
-            self.problem = cvx.Problem(objective, constraints)
-            print("fine convexification, constraints, objective, problem")
-            print("enter the solver")
             try:
                 error = self.problem.solve(verbose=self.params.verbose_solver, solver=self.params.solver)
             except cvx.SolverError:
@@ -172,7 +161,6 @@ class SatellitePlanner:
                 break
 
             if self._check_convergence():
-                print("Converged")
                 X_star = self.variables["X"].value
                 U_star = self.variables["U"].value
                 p_star = self.variables["p"].value
@@ -181,21 +169,27 @@ class SatellitePlanner:
                     self.U_bar = U_star.copy()
                     self.p_bar = p_star.copy()
                 break
-            rho, accept = self._update_trust_region()
+
+            self._update_trust_region()
 
         # Example data: sequence from array
         mycmds, mystates = self._extract_seq_from_array()
 
         return mycmds, mystates
 
-    def initial_guess(self, init_vec, goal_vec) -> tuple[NDArray, NDArray, NDArray]:
+    def initial_guess(self) -> tuple[NDArray, NDArray, NDArray]:
         """
         Define initial guess for SCvx.
         """
+        P = self.problem_parameters
         K = self.params.K
         n_x = self.satellite.n_x
         n_u = self.satellite.n_u
         n_p = self.satellite.n_p
+
+        init_vec = P["init_vec"].value
+        goal_vec = P["goal_vec"].value
+
         X_bar = np.zeros((n_x, K))
         U_bar = np.zeros((n_u, K))
         p_bar = np.zeros(n_p)
@@ -205,16 +199,14 @@ class SatellitePlanner:
             X_bar[:, k] = (1 - tau) * init_vec + tau * goal_vec
         # Initial guess for time
         p_bar[0] = 10
+
         return X_bar, U_bar, p_bar
 
-    def _set_goal(self, init_state, goal_state):
+    def _set_goal(self):
         """
         Sets goal for SCvx.
         """
         P = self.problem_parameters
-        # Set initial and goal states
-        P["init_state"].value = init_state
-        P["goal_state"].value = goal_state
         # Set trust region radius
         P["eta_tr"].value = self.params.tr_radius
 
@@ -252,8 +244,9 @@ class SatellitePlanner:
         num_obstacles = len(self.planets) + len(self.asteroids)
 
         problem_parameters = {
-            "init_state": cvx.Parameter(n_x),
-            "goal_state": cvx.Parameter(n_x),
+            # vector form of initial and goal states
+            "init_vec": cvx.Parameter(n_x),
+            "goal_vec": cvx.Parameter(n_x),
             # linearized dynamics parameters
             "A_bar": [cvx.Parameter((n_x, n_x)) for _ in range(K - 1)],
             "B_minus_bar": [cvx.Parameter((n_x, n_u)) for _ in range(K - 1)],
@@ -284,7 +277,7 @@ class SatellitePlanner:
         p_max = self.params.p_max
 
         P = self.problem_parameters
-        goal = P["goal_state"]
+        goal = P["goal_vec"]
         eta_tr = P["eta_tr"]
 
         X = self.variables["X"]
@@ -329,7 +322,7 @@ class SatellitePlanner:
         # general constraints
         gen_constraints = [
             # initial state
-            X[:, 0] - P["init_state"] == nu_ic,
+            X[:, 0] - P["init_vec"] == nu_ic,
             # final state
             # pose
             cvx.abs(X[0, K - 1] - goal[0]) <= pos_tol + nu_tc[0],
@@ -514,7 +507,7 @@ class SatellitePlanner:
 
         return bool(diff_tot < eps)
 
-    def _update_trust_region(self) -> tuple[float, bool]:
+    def _update_trust_region(self):
         """
         Update trust region radius.
         """
@@ -527,7 +520,7 @@ class SatellitePlanner:
             eta = self.problem_parameters["eta_tr"].value
             eta = max(self.params.min_tr_radius, eta / self.params.alpha)
             self.problem_parameters["eta_tr"].value = eta
-            return 0.0, False
+            return
 
         if not isinstance(val, (int, float)):
             raise TypeError(f"Unexpected type for problem.value: {type(val)}")
@@ -579,7 +572,7 @@ class SatellitePlanner:
             self.U_bar = U_star.copy()
             self.p_bar = p_star.copy()
 
-        return rho, accept
+        return
 
     def _J_lambda(self, X, U, p):
         """
@@ -598,7 +591,7 @@ class SatellitePlanner:
         time_cost = float(self.params.weight_p @ p)
 
         # Compute defects
-        x0 = self.problem_parameters["init_state"].value
+        x0 = self.problem_parameters["init_vec"].value
         X_nl = self.integrator.integrate_nonlinear_full(x0, U, p)
         defects = X[:, 1:] - X_nl[:, 1:]
 
@@ -606,11 +599,11 @@ class SatellitePlanner:
         dyn_violation = np.sum(np.abs(defects))
 
         # Initial condition violation
-        x0_target = self.problem_parameters["init_state"].value
+        x0_target = self.problem_parameters["init_vec"].value
         init_violation = np.sum(np.abs(X[:, 0] - x0_target))
 
         # Terminal condition violation
-        goal = self.problem_parameters["goal_state"].value
+        goal = self.problem_parameters["goal_vec"].value
         pos_tol = self.params.pos_tol
         dir_tol = self.params.dir_tol
         vel_tol = self.params.vel_tol
