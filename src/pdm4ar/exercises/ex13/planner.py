@@ -142,6 +142,7 @@ class SatellitePlanner:
         #     solve convex sub problem
         #     update trust region
         #     update stopping criterion
+        # DEBUG: tiny cvxpy sanity check
 
         # Convert init and goal state to arrays
         init_vec = np.array([init_state.x, init_state.y, init_state.psi, init_state.vx, init_state.vy, init_state.dpsi])
@@ -162,6 +163,8 @@ class SatellitePlanner:
             constraints = self._get_constraints()
             objective = self._get_objective()
             self.problem = cvx.Problem(objective, constraints)
+            print("fine convexification, constraints, objective, problem")
+            print("enter the solver")
             try:
                 error = self.problem.solve(verbose=self.params.verbose_solver, solver=self.params.solver)
             except cvx.SolverError:
