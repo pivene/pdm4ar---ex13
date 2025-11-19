@@ -484,10 +484,8 @@ class SatellitePlanner:
         """
         Check convergence of SCvx.
         """
-        # Extract stopping criterion
         eps = self.params.stop_crit
 
-        # Extract new optimized values, we have to use .value to get numeric values from the symbolic CVXPY variable
         X_star = self.variables["X"].value
         p_star = self.variables["p"].value
 
@@ -498,10 +496,9 @@ class SatellitePlanner:
         X_ref = self.X_bar
         p_ref = self.p_bar
 
-        # Compute the second stopping criterion from the slides with q=2 (euclidean norm)
         diff_p = np.linalg.norm(p_star - p_ref)
 
-        diff_X = np.linalg.norm(X_star - X_ref, axis=0)  # axis=0 to get norm over state dimension not over time
+        diff_X = np.linalg.norm(X_star - X_ref, axis=0)
         max_diff_X = np.max(diff_X)
 
         diff_tot = diff_p + max_diff_X
@@ -532,7 +529,6 @@ class SatellitePlanner:
         # Nonlinear cost of reference trajectory
         J_bar = float(self._J_lambda(self.X_bar, self.U_bar, self.p_bar))
 
-        # Extract new optimized values, we have to use .value to get numeric values from the symbolic CVXPY variable
         X_star = self.variables["X"].value
         U_star = self.variables["U"].value
         p_star = self.variables["p"].value
@@ -552,16 +548,16 @@ class SatellitePlanner:
         # Trust region radius update
         accept = True
         if rho <= self.params.rho_0:
-            # reject
+            # shrink and reject
             eta = max(self.params.min_tr_radius, eta / self.params.alpha)
             accept = False
         elif self.params.rho_0 < rho <= self.params.rho_1:
-            # shrink
+            # shrink and accept
             eta = max(self.params.min_tr_radius, eta / self.params.alpha)
         # elif self.params.rho_1 < rho <= self.params.rho_2:
         # keep - eta doesn't change, the solution is accepted
         elif rho >= self.params.rho_2:
-            # expand
+            # expand and accept
             eta = min(self.params.max_tr_radius, eta * self.params.beta)
 
         # update tr radius
@@ -644,6 +640,7 @@ class SatellitePlanner:
 
         # Final nonlinear cost
         J = time_cost + slack_penalty + 0.5 * travelled_distance + 0.5 * average_input
+
         return float(J)
 
     # @staticmethod
