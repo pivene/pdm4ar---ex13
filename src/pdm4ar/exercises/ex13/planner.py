@@ -163,6 +163,7 @@ class SatellitePlanner:
         self.problem = cvx.Problem(objective, constraints)
 
         for i in range(self.params.max_iterations):
+            print(i)
 
             self._convexification()
 
@@ -173,6 +174,11 @@ class SatellitePlanner:
                 break
 
             if self._check_convergence():
+                # print slack variables for debugging
+                print(np.max(self.variables["nu"].value))
+                print(np.max(self.variables["nu_s_p"].value))
+                print(np.max(self.variables["nu_ic"].value))
+                print(np.max(self.variables["nu_tc"].value))
                 break
 
             self._update_trust_region()
@@ -339,9 +345,9 @@ class SatellitePlanner:
         # general constraints
         gen_constraints = [
             # initial state
-            cvx.abs(X[:, 0] - P["init_vec"]) <= nu_ic,
+            X[:, 0] - P["init_vec"] - nu_ic == 0,
             # final state
-            cvx.abs(X[:, -1] - P["goal_vec"]) <= nu_tc,
+            X[:, -1] - P["goal_vec"] - nu_tc == 0,
             # control inputs at start and goal
             U[:, 0] == 0,
             U[:, K - 1] == 0,
@@ -352,8 +358,6 @@ class SatellitePlanner:
             p <= p_max,
             p >= 0,
             # positive slack variables
-            nu_ic >= 0,
-            nu_tc >= 0,
             nu_s_p >= 0,
         ]
         if num_asteroids != 0:
@@ -422,11 +426,11 @@ class SatellitePlanner:
         n_p = self.satellite.n_p
         num_asteroids = len(self.asteroids)
 
-        P["A_bar"] = A_bar
-        P["B_minus_bar"] = B_minus_bar
-        P["B_plus_bar"] = B_plus_bar
-        P["F_bar"] = F_bar
-        P["r_bar"] = r_bar
+        P["A_bar"].value = A_bar
+        P["B_minus_bar"].value = B_minus_bar
+        P["B_plus_bar"].value = B_plus_bar
+        P["F_bar"].value = F_bar
+        P["r_bar"].value = r_bar
 
         sat_radius = (self.sg.w_half + self.sg.w_panel) * 1.1
         # planets
