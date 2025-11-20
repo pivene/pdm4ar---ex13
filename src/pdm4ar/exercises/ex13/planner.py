@@ -175,18 +175,18 @@ class SatellitePlanner:
 
             if self._check_convergence():
                 # print slack variables for debugging
+                # missing slck for asteroids
                 print(np.max(self.variables["nu"].value))
                 print(np.max(self.variables["nu_s_p"].value))
                 print(np.max(self.variables["nu_ic"].value))
                 print(np.max(self.variables["nu_tc"].value))
                 break
 
-            self._update_trust_region()
-            """
+            # self._update_trust_region()
+
             self.X_bar = self.variables["X"].value
             self.U_bar = self.variables["U"].value
             self.p_bar = self.variables["p"].value
-            """
 
         # Example data: sequence from array
         mycmds, mystates = self._extract_seq_from_array()
@@ -358,7 +358,7 @@ class SatellitePlanner:
             p <= p_max,
             p >= 0,
             # positive slack variables
-            nu_s_p >= 0,
+            # nu_s_p >= 0,
         ]
         if num_asteroids != 0:
             gen_constraints.append(nu_s_a >= 0)
@@ -562,7 +562,10 @@ class SatellitePlanner:
         J_star = float(self._J_lambda(X_star, U_star, p_star))
 
         den = J_bar - L_star
-        if den <= 0:
+        if den < 0:
+            print("denominatore rho NEGATIVO")
+        elif den == 0:
+            print("denominatore rho UGUALE A 0")
             rho = 0.0
         else:
             rho = (J_bar - J_star) / den
@@ -572,11 +575,11 @@ class SatellitePlanner:
 
         # Trust region radius update
         accept = True
-        if rho <= self.params.rho_0:
+        if rho < self.params.rho_0:
             # shrink and reject
             eta = max(self.params.min_tr_radius, eta / self.params.alpha)
             accept = False
-        elif self.params.rho_0 < rho <= self.params.rho_1:
+        elif self.params.rho_0 <= rho < self.params.rho_1:
             # shrink and accept
             eta = max(self.params.min_tr_radius, eta / self.params.alpha)
         # elif self.params.rho_1 < rho <= self.params.rho_2:
