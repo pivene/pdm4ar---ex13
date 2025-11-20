@@ -182,8 +182,7 @@ class SatellitePlanner:
                 print(np.max(self.variables["nu_tc"].value))
                 break
 
-            self._update_trust_region()
-
+            # self._update_trust_region()
             self.X_bar = self.variables["X"].value
             self.U_bar = self.variables["U"].value
             self.p_bar = self.variables["p"].value
@@ -400,7 +399,7 @@ class SatellitePlanner:
             slack_cost_a = 0
 
         objective = (
-            self.params.weight_p @ p + slack_cost_wa + slack_cost_a + 0.5 * travelled_distance + 0.5 * average_input
+            self.params.weight_p @ p + slack_cost_wa + slack_cost_a + 0.01 * travelled_distance + 0.01 * average_input
         )
 
         return cvx.Minimize(objective)
@@ -432,8 +431,9 @@ class SatellitePlanner:
         P["F_bar"].value = F_bar
         P["r_bar"].value = r_bar
 
-        sat_radius = (self.sg.w_half + self.sg.w_panel) * 1.1
-        # planets
+        sat_radius = (
+            np.sqrt((self.sg.w_half + self.sg.w_panel) ** 2 + max(self.sg.l_f, self.sg.l_r) ** 2) * 1.1
+        )  # planets
         planets_list = []
         for planet in self.planets.values():
             planets_list.append({"x": planet.center[0], "y": planet.center[1], "r": planet.radius})
@@ -550,18 +550,20 @@ class SatellitePlanner:
 
         # Linear predicted cost
         L_star = float(val)
+        print("L_star = ", L_star)
 
         # Nonlinear cost of reference trajectory
         J_bar = float(self._J_lambda(self.X_bar, self.U_bar, self.p_bar))
-
+        print("J_bar = ", J_bar)
         X_star = self.variables["X"].value
         U_star = self.variables["U"].value
         p_star = self.variables["p"].value
 
         # Nonlinear cost of optimized trajectory
         J_star = float(self._J_lambda(X_star, U_star, p_star))
-
+        print("J_star = ", J_star)
         den = J_bar - L_star
+
         if den < 0:
             print("denominatore rho NEGATIVO")
         elif den == 0:
@@ -569,6 +571,7 @@ class SatellitePlanner:
             rho = 0.0
         else:
             rho = (J_bar - J_star) / den
+            print("Rho = ", rho)
 
         # Current trust region radius
         eta = self.problem_parameters["eta_tr"].value
@@ -588,6 +591,7 @@ class SatellitePlanner:
             # expand and accept
             eta = min(self.params.max_tr_radius, eta * self.params.beta)
 
+        print("Eta = ", eta)
         # update tr radius
         self.problem_parameters["eta_tr"].value = eta
 
@@ -608,12 +612,15 @@ class SatellitePlanner:
 
         # Travelled distance component
         travelled_distance = np.sum([np.linalg.norm(X[0:2, k + 1] - X[0:2, k], 2) for k in range(K - 1)])
+        print("travel_distance = ", travelled_distance)
 
         # Average control component
         average_input = np.sum(np.abs(U)) / K
+        print("average_input = ", average_input)
 
         # Time cost component
         time_cost = float(self.params.weight_p @ p)
+        print("time_cost = ", time_cost)
 
         # Compute defects
         X_nl = self.integrator.integrate_nonlinear_piecewise(X, U, p)
@@ -621,14 +628,17 @@ class SatellitePlanner:
 
         # Dynamic violation
         dyn_violation = np.sum(np.abs(defects))
+        print("dyn_violation = ", dyn_violation)
 
         # Initial condition violation
         x0_target = self.problem_parameters["init_vec"].value
         init_violation = np.sum(np.abs(X[:, 0] - x0_target))
+        print("init_violation = ", init_violation)
 
         # Terminal condition violation
         goal = self.problem_parameters["goal_vec"].value
         final_violation = np.sum(np.abs(X[:, -1] - goal))
+        print("final_violation = ", final_violation)
 
         """pos_err = np.linalg.norm(
             [
@@ -649,13 +659,12 @@ class SatellitePlanner:
 
         # planets constraint violation
         # Satellite safety radius (same logic as in convexification)
-        sat_radius = (self.sg.w_half + self.sg.w_panel) * 1.1
+        sat_radius = np.sqrt((self.sg.w_half + self.sg.w_panel) ** 2 + max(self.sg.l_f, self.sg.l_r) ** 2) * 1.1
 
         p_violation = 0.0
         for k in range(K):
             sat_x = X[0, k]
             sat_y = X[1, k]
-
             for planet in self.planets.values():
                 obs_x = planet.center[0]
                 obs_y = planet.center[1]
@@ -664,7 +673,7 @@ class SatellitePlanner:
                 r_safe = sat_radius + obs_r
                 dist = np.sqrt((sat_x - obs_x) ** 2 + (sat_y - obs_y) ** 2)
                 p_violation += np.maximum(r_safe - dist, 0.0)
-
+        print("p_violation = ", p_violation)
         a_violation = 0.0
         num_asteroids = len(self.asteroids)
         if num_asteroids != 0:
@@ -691,14 +700,16 @@ class SatellitePlanner:
                     dist = np.sqrt((sat_x - obs_x) ** 2 + (sat_y - obs_y) ** 2)
 
                     a_violation += np.maximum(r_safe - dist, 0.0)
+        print("a_violation = ", a_violation)
 
         # Total penalty replacing the slack variables
         slack_penalty = lam * (dyn_violation + init_violation + final_violation + p_violation)
+        print("slack_penalty = ", slack_penalty)
         if num_asteroids != 0:
             slack_penalty += lam * a_violation
 
         # Final nonlinear cost
-        J = time_cost + slack_penalty + 0.5 * travelled_distance + 0.5 * average_input
+        J = time_cost + slack_penalty + 0.01 * travelled_distance + 0.01 * average_input
 
         return float(J)
 
