@@ -43,11 +43,6 @@ class SolverParameters:
     alpha: float = 2.0  # div factor trust region update
     beta: float = 3.2  # mult factor trust region update
 
-    # tolerances
-    pos_tol: float = 0.5
-    dir_tol: float = 0.1
-    vel_tol: float = 0.2
-
     # Set max time
     p_max: float = 100
 
@@ -153,7 +148,9 @@ class SatellitePlanner:
         self.problem = cvx.Problem(objective, constraints)
 
         for i in range(self.params.max_iterations):
+
             self._convexification()
+
             try:
                 error = self.problem.solve(verbose=self.params.verbose_solver, solver=self.params.solver)
             except cvx.SolverError:
@@ -161,17 +158,9 @@ class SatellitePlanner:
                 break
 
             if self._check_convergence():
-                X_star = self.variables["X"].value
-                U_star = self.variables["U"].value
-                p_star = self.variables["p"].value
-
-                if X_star is not None and U_star is not None and p_star is not None:
-                    self.X_bar = X_star.copy()
-                    self.U_bar = U_star.copy()
-                    self.p_bar = p_star.copy()
                 break
 
-            self._update_trust_region()
+            # self._update_trust_region()
 
         # Example data: sequence from array
         mycmds, mystates = self._extract_seq_from_array()
@@ -249,11 +238,11 @@ class SatellitePlanner:
             "init_vec": cvx.Parameter(n_x),
             "goal_vec": cvx.Parameter(n_x),
             # linearized dynamics parameters
-            "A_bar": [cvx.Parameter((n_x, n_x)) for _ in range(K - 1)],
-            "B_minus_bar": [cvx.Parameter((n_x, n_u)) for _ in range(K - 1)],
-            "B_plus_bar": [cvx.Parameter((n_x, n_u)) for _ in range(K - 1)],
-            "F_bar": [cvx.Parameter((n_x, n_p)) for _ in range(K - 1)],
-            "r_bar": [cvx.Parameter(n_x) for _ in range(K - 1)],
+            "A_bar": cvx.Parameter((n_x, n_x)),
+            "B_minus_bar": cvx.Parameter((n_x, n_u)),
+            "B_plus_bar": cvx.Parameter((n_x, n_u)),
+            "F_bar": cvx.Parameter((n_x, n_p)),
+            "r_bar": cvx.Parameter(n_x),
             # linearized obstacles parameters
             "C_coll": [[cvx.Parameter((1, n_x)) for _ in range(num_obstacles)] for _ in range(K)],
             "G_coll": [[cvx.Parameter((1, n_p)) for _ in range(num_obstacles)] for _ in range(K)],
@@ -272,13 +261,9 @@ class SatellitePlanner:
         n_u = self.satellite.n_u
         n_p = self.satellite.n_p
         K = self.params.K
-        pos_tol = self.params.pos_tol
-        dir_tol = self.params.dir_tol
-        vel_tol = self.params.vel_tol
         p_max = self.params.p_max
 
         P = self.problem_parameters
-        goal = P["goal_vec"]
         eta_tr = P["eta_tr"]
 
         X = self.variables["X"]
@@ -296,11 +281,11 @@ class SatellitePlanner:
         for k in range(K - 1):
             dynamic_constraints.append(
                 X[:, k + 1]
-                == P["A_bar"][k] @ X[:, k]
-                + P["B_minus_bar"][k] @ U[:, k]
-                + P["B_plus_bar"][k] @ U[:, k + 1]
-                + P["F_bar"][k] @ p
-                + P["r_bar"][k]
+                == P["A_bar"] @ X[:, k]
+                + P["B_minus_bar"] @ U[:, k]
+                + P["B_plus_bar"] @ U[:, k + 1]
+                + P["F_bar"] @ p
+                + P["r_bar"]
                 + nu[:, k]
             )
 
@@ -323,16 +308,9 @@ class SatellitePlanner:
         # general constraints
         gen_constraints = [
             # initial state
-            X[:, 0] - P["init_vec"] == nu_ic,
+            cvx.abs(X[:, 0] - P["init_vec"]) <= nu_ic,
             # final state
-            # pose
-            cvx.abs(X[0, K - 1] - goal[0]) <= pos_tol + nu_tc[0],
-            cvx.abs(X[1, K - 1] - goal[1]) <= pos_tol + nu_tc[1],
-            cvx.abs(X[2, K - 1] - goal[2]) <= dir_tol + nu_tc[2],
-            # velocity
-            cvx.abs(X[3, K - 1] - goal[3]) <= vel_tol + nu_tc[3],
-            cvx.abs(X[4, K - 1] - goal[4]) <= vel_tol + nu_tc[4],
-            cvx.abs(X[5, K - 1] - goal[5]) <= vel_tol + nu_tc[5],
+            cvx.abs(X[:, -1] - P["goal_vec"]) <= nu_tc,
             # control inputs at start and goal
             U[:, 0] == 0,
             U[:, K - 1] == 0,
@@ -343,6 +321,7 @@ class SatellitePlanner:
             p <= p_max,
             p >= 0,
             # positive slack variables
+            nu_ic >= 0,
             nu_tc >= 0,
             nu_s >= 0,
         ]
@@ -399,11 +378,11 @@ class SatellitePlanner:
         n_p = self.satellite.n_p
 
         for k in range(K - 1):
-            P["A_bar"][k].value = A_bar[:, k].reshape((n_x, n_x), order="F")
-            P["B_plus_bar"][k].value = B_plus_bar[:, k].reshape((n_x, n_u), order="F")
-            P["B_minus_bar"][k].value = B_minus_bar[:, k].reshape((n_x, n_u), order="F")
-            P["F_bar"][k].value = F_bar[:, k].reshape((n_x, n_p), order="F")
-            P["r_bar"][k].value = r_bar[:, k]
+            P["A_bar"].value = A_bar[:, k].reshape((n_x, n_x), order="F")
+            P["B_plus_bar"].value = B_plus_bar[:, k].reshape((n_x, n_u), order="F")
+            P["B_minus_bar"].value = B_minus_bar[:, k].reshape((n_x, n_u), order="F")
+            P["F_bar"].value = F_bar[:, k].reshape((n_x, n_p), order="F")
+            P["r_bar"].value = r_bar[:, k]
 
         sat_radius = (self.sg.w_half + self.sg.w_panel) * 1.1
         # planets
@@ -428,10 +407,8 @@ class SatellitePlanner:
                 P["C_coll"][k][j].value = C_val
                 # G
                 P["G_coll"][k][j].value = np.zeros((1, n_p))
-                val_g = -(dx**2) - (dy**2) + r_safe_sq
                 # r
-                c_dot_x = C_val[0, 0] * bar_x + C_val[0, 1] * bar_y
-                P["r_coll"][k][j].value = val_g - c_dot_x
+                P["r_coll"][k][j].value = -(dx**2) - (dy**2) + r_safe_sq - C_val[0, 0] * bar_x - C_val[0, 1] * bar_y
 
         # asteroids
         asteroids_list = []
@@ -601,23 +578,20 @@ class SatellitePlanner:
 
         # Terminal condition violation
         goal = self.problem_parameters["goal_vec"].value
-        pos_tol = self.params.pos_tol
-        dir_tol = self.params.dir_tol
-        vel_tol = self.params.vel_tol
         X_terminal = X[:, -1]
 
         pos_err = np.linalg.norm(
             [
-                np.maximum(np.abs(X_terminal[0] - goal[0]) - pos_tol, 0),
-                np.maximum(np.abs(X_terminal[1] - goal[1]) - pos_tol, 0),
+                np.maximum(np.abs(X_terminal[0] - goal[0]), 0),
+                np.maximum(np.abs(X_terminal[1] - goal[1]), 0),
             ]
         )
-        dir_err = np.maximum(np.abs(X_terminal[2] - goal[2]) - dir_tol, 0)
+        dir_err = np.maximum(np.abs(X_terminal[2] - goal[2]), 0)
         vel_err = np.linalg.norm(
             [
-                np.maximum(np.abs(X_terminal[3] - goal[3]) - vel_tol, 0),
-                np.maximum(np.abs(X_terminal[4] - goal[4]) - vel_tol, 0),
-                np.maximum(np.abs(X_terminal[5] - goal[5]) - vel_tol, 0),
+                np.maximum(np.abs(X_terminal[3] - goal[3]), 0),
+                np.maximum(np.abs(X_terminal[4] - goal[4]), 0),
+                np.maximum(np.abs(X_terminal[5] - goal[5]), 0),
             ]
         )
 
@@ -649,16 +623,21 @@ class SatellitePlanner:
         Create a DgSampledSequence from numpy arrays and timestamps.
         """
         K = self.params.K
+        VAR = self.variables
+
+        X = VAR["X"].value
+        U = VAR["U"].value
+        p = VAR["p"].value
 
         # Timestamps from 0 to final time
-        t_final = float(self.p_bar[0])
+        t_final = float(p)
         ts = np.linspace(0.0, t_final, K)
 
         # Commands
         cmds_list = []
         for k in range(K):
-            F_left = float(self.U_bar[0, k])
-            F_right = float(self.U_bar[1, k])
+            F_left = float(U[0, k])
+            F_right = float(U[1, k])
             cmds_list.append(SatelliteCommands(F_left, F_right))
 
         cmds_seq = DgSampledSequence[SatelliteCommands](timestamps=ts, values=cmds_list)
@@ -666,12 +645,12 @@ class SatellitePlanner:
         # States
         state_list = []
         for k in range(K):
-            x = float(self.X_bar[0, k])
-            y = float(self.X_bar[1, k])
-            psi = float(self.X_bar[2, k])
-            vx = float(self.X_bar[3, k])
-            vy = float(self.X_bar[4, k])
-            dpsi = float(self.X_bar[5, k])
+            x = float(X[0, k])
+            y = float(X[1, k])
+            psi = float(X[2, k])
+            vx = float(X[3, k])
+            vy = float(X[4, k])
+            dpsi = float(X[5, k])
             state_list.append(SatelliteState(x, y, psi, vx, vy, dpsi))
 
         state_seq = DgSampledSequence[SatelliteState](timestamps=ts, values=state_list)
