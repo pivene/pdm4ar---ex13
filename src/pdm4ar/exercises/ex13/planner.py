@@ -422,12 +422,11 @@ class SatellitePlanner:
         n_p = self.satellite.n_p
         num_asteroids = len(self.asteroids)
 
-        for k in range(K - 1):
-            P["A_bar"][k].value = A_bar[:, k].reshape((n_x, n_x), order="F")
-            P["B_plus_bar"][k].value = B_plus_bar[:, k].reshape((n_x, n_u), order="F")
-            P["B_minus_bar"][k].value = B_minus_bar[:, k].reshape((n_x, n_u), order="F")
-            P["F_bar"][k].value = F_bar[:, k].reshape((n_x, n_p), order="F")
-            P["r_bar"][k].value = r_bar[:, k]
+        P["A_bar"] = A_bar
+        P["B_minus_bar"] = B_minus_bar
+        P["B_plus_bar"] = B_plus_bar
+        P["F_bar"] = F_bar
+        P["r_bar"] = r_bar
 
         sat_radius = (self.sg.w_half + self.sg.w_panel) * 1.1
         # planets
