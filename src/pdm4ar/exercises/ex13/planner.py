@@ -182,7 +182,7 @@ class SatellitePlanner:
                 print(np.max(self.variables["nu_tc"].value))
                 break
 
-            # self._update_trust_region()
+            self._update_trust_region()
 
             self.X_bar = self.variables["X"].value
             self.U_bar = self.variables["U"].value
@@ -616,8 +616,7 @@ class SatellitePlanner:
         time_cost = float(self.params.weight_p @ p)
 
         # Compute defects
-        x0 = self.problem_parameters["init_vec"].value
-        X_nl = self.integrator.integrate_nonlinear_full(x0, U, p)
+        X_nl = self.integrator.integrate_nonlinear_piecewise(X, U, p)
         defects = X[:, 1:] - X_nl[:, 1:]
 
         # Dynamic violation
@@ -629,9 +628,9 @@ class SatellitePlanner:
 
         # Terminal condition violation
         goal = self.problem_parameters["goal_vec"].value
-        X_terminal = X[:, -1]
+        final_violation = np.sum(np.abs(X[:, -1] - goal))
 
-        pos_err = np.linalg.norm(
+        """pos_err = np.linalg.norm(
             [
                 np.maximum(np.abs(X_terminal[0] - goal[0]), 0),
                 np.maximum(np.abs(X_terminal[1] - goal[1]), 0),
@@ -644,35 +643,57 @@ class SatellitePlanner:
                 np.maximum(np.abs(X_terminal[4] - goal[4]), 0),
                 np.maximum(np.abs(X_terminal[5] - goal[5]), 0),
             ]
-        )
+        )"""
 
-        term_violation = pos_err + dir_err + vel_err
+        # term_violation = pos_err + dir_err + vel_err
 
         # planets constraint violation
-        P = self.problem_parameters
-        num_planets = len(self.planets)
-        p_violation = 0
-        for k in range(K):
-            for j in range(num_planets):
-                c = P["C_coll_p"][k][j].value
-                g = P["G_coll_p"][k][j].value
-                r = P["r_coll_p"][k][j].value
-                val = float(c @ X[:, k] + g @ p + r)
-                p_violation += max(val, 0.0)
+        # Satellite safety radius (same logic as in convexification)
+        sat_radius = (self.sg.w_half + self.sg.w_panel) * 1.1
 
+        p_violation = 0.0
+        for k in range(K):
+            sat_x = X[0, k]
+            sat_y = X[1, k]
+
+            for planet in self.planets.values():
+                obs_x = planet.center[0]
+                obs_y = planet.center[1]
+                obs_r = planet.radius
+
+                r_safe = sat_radius + obs_r
+                dist = np.sqrt((sat_x - obs_x) ** 2 + (sat_y - obs_y) ** 2)
+                p_violation += np.maximum(r_safe - dist, 0.0)
+
+        a_violation = 0.0
         num_asteroids = len(self.asteroids)
         if num_asteroids != 0:
-            a_violation = 0
+            final_time = float(p[0])
             for k in range(K):
-                for j in range(num_asteroids):
-                    c = P["C_coll_a"][k][j].value
-                    g = P["G_coll_a"][k][j].value
-                    r = P["r_coll_a"][k][j].value
-                    val = float(c @ X[:, k] + g @ p + r)
-                    a_violation += max(val, 0.0)
+                tau = k / (K - 1)
+                t_k = tau * final_time
+                sat_x = X[0, k]
+                sat_y = X[1, k]
+
+                for asteroid in self.asteroids.values():
+                    start_x = asteroid.start[0]
+                    start_y = asteroid.start[1]
+                    vel_x = asteroid.velocity[0]
+                    vel_y = asteroid.velocity[1]
+                    obs_r = asteroid.radius
+
+                    # Calculate asteroid position at time t_k
+                    obs_x = start_x + vel_x * t_k
+                    obs_y = start_y + vel_y * t_k
+
+                    r_safe = sat_radius + obs_r
+
+                    dist = np.sqrt((sat_x - obs_x) ** 2 + (sat_y - obs_y) ** 2)
+
+                    a_violation += np.maximum(r_safe - dist, 0.0)
 
         # Total penalty replacing the slack variables
-        slack_penalty = lam * (dyn_violation + init_violation + term_violation + p_violation)
+        slack_penalty = lam * (dyn_violation + init_violation + final_violation + p_violation)
         if num_asteroids != 0:
             slack_penalty += lam * a_violation
 
