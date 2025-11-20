@@ -111,9 +111,24 @@ class SatellitePlanner:
 
         # Variables
         self.variables = self._get_variables()
+        num_asteroids = len(self.asteroids)
+        K = self.params.K
+        if num_asteroids != 0:
+            self.variables.update({"nu_s_a": cvx.Variable((num_asteroids, K))})
 
         # Problem Parameters
         self.problem_parameters = self._get_problem_parameters()
+        n_x = self.satellite.n_x
+        n_p = self.satellite.n_p
+        if num_asteroids != 0:
+            self.problem_parameters.update(
+                {
+                    # linearized asteroids constraints parameters
+                    "C_coll_a": [[cvx.Parameter((1, n_x)) for _ in range(num_asteroids)] for _ in range(K)],
+                    "G_coll_a": [[cvx.Parameter((1, n_p)) for _ in range(num_asteroids)] for _ in range(K)],
+                    "r_coll_a": [[cvx.Parameter() for _ in range(num_asteroids)] for _ in range(K)],
+                }
+            )
 
     def compute_trajectory(
         self, init_state: SatelliteState, goal_state: DynObstacleState
@@ -160,7 +175,12 @@ class SatellitePlanner:
             if self._check_convergence():
                 break
 
-            # self._update_trust_region()
+            self._update_trust_region()
+            """
+            self.X_bar = self.variables["X"].value
+            self.U_bar = self.variables["U"].value
+            self.p_bar = self.variables["p"].value
+            """
 
         # Example data: sequence from array
         mycmds, mystates = self._extract_seq_from_array()
@@ -209,7 +229,6 @@ class SatellitePlanner:
         n_u = self.satellite.n_u
         n_p = self.satellite.n_p
         num_planets = len(self.planets)
-        num_asteroids = len(self.asteroids)
 
         variables = {
             "X": cvx.Variable((n_x, K)),
@@ -218,7 +237,6 @@ class SatellitePlanner:
             # slack, virtual control
             "nu": cvx.Variable((n_x, K - 1)),
             "nu_s_p": cvx.Variable((num_planets, K)),
-            "nu_s_a": cvx.Variable((num_asteroids, K)),
             "nu_ic": cvx.Variable(n_x),
             "nu_tc": cvx.Variable(n_x),
         }
@@ -234,26 +252,21 @@ class SatellitePlanner:
         n_p = self.satellite.n_p
         K = self.params.K
         num_planets = len(self.planets)
-        num_asteroids = len(self.asteroids)
 
         problem_parameters = {
             # vector form of initial and goal states
             "init_vec": cvx.Parameter(n_x),
             "goal_vec": cvx.Parameter(n_x),
             # linearized dynamics parameters
-            "A_bar": cvx.Parameter((n_x, n_x)),
-            "B_minus_bar": cvx.Parameter((n_x, n_u)),
-            "B_plus_bar": cvx.Parameter((n_x, n_u)),
-            "F_bar": cvx.Parameter((n_x, n_p)),
-            "r_bar": cvx.Parameter(n_x),
+            "A_bar": cvx.Parameter((n_x * n_x, K - 1)),
+            "B_minus_bar": cvx.Parameter((n_x * n_u, K - 1)),
+            "B_plus_bar": cvx.Parameter((n_x * n_u, K - 1)),
+            "F_bar": cvx.Parameter((n_x * n_p, K - 1)),
+            "r_bar": cvx.Parameter((n_x, K - 1)),
             # linearized planets constraints parameters
             "C_coll_p": [[cvx.Parameter((1, n_x)) for _ in range(num_planets)] for _ in range(K)],
             "G_coll_p": [[cvx.Parameter((1, n_p)) for _ in range(num_planets)] for _ in range(K)],
             "r_coll_p": [[cvx.Parameter() for _ in range(num_planets)] for _ in range(K)],
-            # linearized asteroids constraints parameters
-            "C_coll_a": [[cvx.Parameter((1, n_x)) for _ in range(num_asteroids)] for _ in range(K)],
-            "G_coll_a": [[cvx.Parameter((1, n_p)) for _ in range(num_asteroids)] for _ in range(K)],
-            "r_coll_a": [[cvx.Parameter() for _ in range(num_asteroids)] for _ in range(K)],
             # trust region radius
             "eta_tr": cvx.Parameter(nonneg=True),
         }
@@ -273,29 +286,29 @@ class SatellitePlanner:
         P = self.problem_parameters
         eta_tr = P["eta_tr"]
 
+        num_planets = len(self.planets)
+        num_asteroids = len(self.asteroids)
+
         X = self.variables["X"]
         U = self.variables["U"]
         p = self.variables["p"]
         nu = self.variables["nu"]
         nu_s_p = self.variables["nu_s_p"]
-        nu_s_a = self.variables["nu_s_a"]
+        if num_asteroids != 0:
+            nu_s_a = self.variables["nu_s_a"]
         nu_ic = self.variables["nu_ic"]
         nu_tc = self.variables["nu_tc"]
-
-        num_planets = len(self.planets)
-        num_asteroids = len(self.asteroids)
 
         # dynamic constraints
         dynamic_constraints = []
         for k in range(K - 1):
+            A_k = cvx.reshape(P["A_bar"][:, k], (n_x, n_x))
+            Bm_k = cvx.reshape(P["B_minus_bar"][:, k], (n_x, n_u))
+            Bp_k = cvx.reshape(P["B_plus_bar"][:, k], (n_x, n_u))
+            F_k = cvx.reshape(P["F_bar"][:, k], (n_x, n_p))
+            r_k = P["r_bar"][:, k]
             dynamic_constraints.append(
-                X[:, k + 1]
-                == P["A_bar"] @ X[:, k]
-                + P["B_minus_bar"] @ U[:, k]
-                + P["B_plus_bar"] @ U[:, k + 1]
-                + P["F_bar"] @ p
-                + P["r_bar"]
-                + nu[:, k]
+                X[:, k + 1] == A_k @ X[:, k] + Bm_k @ U[:, k] + Bp_k @ U[:, k + 1] + F_k @ p + r_k + nu[:, k]
             )
 
         # planets constraints
@@ -308,13 +321,12 @@ class SatellitePlanner:
 
         # asteroids constraints
         asteroids_constraints = []
-        for k in range(K):
-            if num_asteroids == 0:
-                break
-            for j in range(num_asteroids):
-                asteroids_constraints.append(
-                    P["C_coll_a"][k][j] @ X[:, k] + P["G_coll_a"][k][j] @ p + P["r_coll_a"][k][j] <= nu_s_a[j, k]
-                )
+        if num_asteroids != 0:
+            for k in range(K):
+                for j in range(num_asteroids):
+                    asteroids_constraints.append(
+                        P["C_coll_a"][k][j] @ X[:, k] + P["G_coll_a"][k][j] @ p + P["r_coll_a"][k][j] <= nu_s_a[j, k]
+                    )
 
         # trust region constraints
         tr_constraints = []
@@ -343,8 +355,9 @@ class SatellitePlanner:
             nu_ic >= 0,
             nu_tc >= 0,
             nu_s_p >= 0,
-            nu_s_a >= 0,
         ]
+        if num_asteroids != 0:
+            gen_constraints.append(nu_s_a >= 0)
 
         constraints = (
             gen_constraints + dynamic_constraints + planets_constraints + asteroids_constraints + tr_constraints
@@ -366,7 +379,8 @@ class SatellitePlanner:
         lam = self.params.lambda_nu
         nu = self.variables["nu"]
         nu_s_p = self.variables["nu_s_p"]
-        nu_s_a = self.variables["nu_s_a"]
+        if num_asteroids != 0:
+            nu_s_a = self.variables["nu_s_a"]
         nu_ic = self.variables["nu_ic"]
         nu_tc = self.variables["nu_tc"]
 
@@ -375,9 +389,7 @@ class SatellitePlanner:
         # average control component
         average_input = cvx.sum(cvx.abs(U)) / K
         # cost of slack variables that must be heavily penalized
-        slack_cost_wa = lam * (
-            cvx.norm1(nu) + cvx.norm1(nu_s_p) + cvx.norm1(nu_s_a) + cvx.norm1(nu_ic) + cvx.norm1(nu_tc)
-        )
+        slack_cost_wa = lam * (cvx.norm1(nu) + cvx.norm1(nu_s_p) + cvx.norm1(nu_ic) + cvx.norm1(nu_tc))
         if num_asteroids != 0:
             slack_cost_a = lam * cvx.norm1(nu_s_a)
         else:
@@ -408,13 +420,14 @@ class SatellitePlanner:
         n_x = self.satellite.n_x
         n_u = self.satellite.n_u
         n_p = self.satellite.n_p
+        num_asteroids = len(self.asteroids)
 
         for k in range(K - 1):
-            P["A_bar"].value = A_bar[:, k].reshape((n_x, n_x), order="F")
-            P["B_plus_bar"].value = B_plus_bar[:, k].reshape((n_x, n_u), order="F")
-            P["B_minus_bar"].value = B_minus_bar[:, k].reshape((n_x, n_u), order="F")
-            P["F_bar"].value = F_bar[:, k].reshape((n_x, n_p), order="F")
-            P["r_bar"].value = r_bar[:, k]
+            P["A_bar"][k].value = A_bar[:, k].reshape((n_x, n_x), order="F")
+            P["B_plus_bar"][k].value = B_plus_bar[:, k].reshape((n_x, n_u), order="F")
+            P["B_minus_bar"][k].value = B_minus_bar[:, k].reshape((n_x, n_u), order="F")
+            P["F_bar"][k].value = F_bar[:, k].reshape((n_x, n_p), order="F")
+            P["r_bar"][k].value = r_bar[:, k]
 
         sat_radius = (self.sg.w_half + self.sg.w_panel) * 1.1
         # planets
@@ -454,40 +467,40 @@ class SatellitePlanner:
                     "r": asteroid.radius,
                 }
             )
-        n_planets = len(self.planets)
+
         # get the convexification of the obstacle for every time step
-        for k in range(K):
-            tau_k = k / (K - 1)
-            t_k = tau_k * float(self.p_bar[0])
-            bar_x = self.X_bar[0, k]
-            bar_y = self.X_bar[1, k]
-            for j, obs in enumerate(asteroids_list):
-                idx = n_planets + j
-                obs_x0 = obs["x0"]
-                obs_y0 = obs["y0"]
-                obs_vx = obs["vx"]
-                obs_vy = obs["vy"]
-                obs_r = obs["r"]
-                # current center coordinates
-                obs_x = obs_x0 + obs_vx * t_k
-                obs_y = obs_y0 + obs_vy * t_k
-                r_safe_sq = (sat_radius + obs_r) ** 2
-                dx = bar_x - obs_x
-                dy = bar_y - obs_y
-                C_val = np.zeros((1, n_x))
-                C_val[0, 0] = -2 * dx
-                C_val[0, 1] = -2 * dy
-                # C
-                P["C_coll_a"][k][idx].value = C_val
-                # G
-                val_g = -(dx**2) - (dy**2) + r_safe_sq
-                dp = -2 * tau_k * (dx * obs_vx + dy * obs_vy)
-                G_val = np.zeros((1, n_p))
-                G_val[0, 0] = -dp
-                P["G_coll_a"][k][idx].value = G_val
-                # r
-                c_dot_x = C_val[0, 0] * bar_x + C_val[0, 1] * bar_y
-                P["r_coll_a"][k][idx].value = val_g - c_dot_x - G_val[0, 0] * float(self.p_bar[0])
+        if num_asteroids != 0:
+            for k in range(K):
+                tau_k = k / (K - 1)
+                t_k = tau_k * float(self.p_bar[0])
+                bar_x = self.X_bar[0, k]
+                bar_y = self.X_bar[1, k]
+                for j, obs in enumerate(asteroids_list):
+                    obs_x0 = obs["x0"]
+                    obs_y0 = obs["y0"]
+                    obs_vx = obs["vx"]
+                    obs_vy = obs["vy"]
+                    obs_r = obs["r"]
+                    # current center coordinates
+                    obs_x = obs_x0 + obs_vx * t_k
+                    obs_y = obs_y0 + obs_vy * t_k
+                    r_safe_sq = (sat_radius + obs_r) ** 2
+                    dx = bar_x - obs_x
+                    dy = bar_y - obs_y
+                    C_val = np.zeros((1, n_x))
+                    C_val[0, 0] = -2 * dx
+                    C_val[0, 1] = -2 * dy
+                    # C
+                    P["C_coll_a"][k][j].value = C_val
+                    # G
+                    val_g = -(dx**2) - (dy**2) + r_safe_sq
+                    dp = -2 * tau_k * (dx * obs_vx + dy * obs_vy)
+                    G_val = np.zeros((1, n_p))
+                    G_val[0, 0] = -dp
+                    P["G_coll_a"][k][j].value = G_val
+                    # r
+                    c_dot_x = C_val[0, 0] * bar_x + C_val[0, 1] * bar_y
+                    P["r_coll_a"][k][j].value = val_g - c_dot_x - G_val[0, 0] * float(self.p_bar[0])
 
     def _check_convergence(self) -> bool:
         """
@@ -629,20 +642,33 @@ class SatellitePlanner:
 
         term_violation = pos_err + dir_err + vel_err
 
-        # Obstacle constraint violation
+        # planets constraint violation
         P = self.problem_parameters
-        num_obstacles = len(self.planets) + len(self.asteroids)
-        obs_violation = 0
+        num_planets = len(self.planets)
+        p_violation = 0
         for k in range(K):
-            for j in range(num_obstacles):
-                c = P["C_coll"][k][j].value
-                g = P["G_coll"][k][j].value
-                r = P["r_coll"][k][j].value
+            for j in range(num_planets):
+                c = P["C_coll_p"][k][j].value
+                g = P["G_coll_p"][k][j].value
+                r = P["r_coll_p"][k][j].value
                 val = float(c @ X[:, k] + g @ p + r)
-                obs_violation += max(val, 0.0)
+                p_violation += max(val, 0.0)
+
+        num_asteroids = len(self.asteroids)
+        if num_asteroids != 0:
+            a_violation = 0
+            for k in range(K):
+                for j in range(num_asteroids):
+                    c = P["C_coll_a"][k][j].value
+                    g = P["G_coll_a"][k][j].value
+                    r = P["r_coll_a"][k][j].value
+                    val = float(c @ X[:, k] + g @ p + r)
+                    a_violation += max(val, 0.0)
 
         # Total penalty replacing the slack variables
-        slack_penalty = lam * (dyn_violation + init_violation + term_violation + obs_violation)
+        slack_penalty = lam * (dyn_violation + init_violation + term_violation + p_violation)
+        if num_asteroids != 0:
+            slack_penalty += lam * a_violation
 
         # Final nonlinear cost
         J = time_cost + slack_penalty + 0.5 * travelled_distance + 0.5 * average_input
