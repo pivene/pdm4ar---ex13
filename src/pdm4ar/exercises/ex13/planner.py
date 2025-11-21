@@ -182,10 +182,10 @@ class SatellitePlanner:
                 print(np.max(self.variables["nu_tc"].value))
                 break
 
-            # self._update_trust_region()
-            self.X_bar = self.variables["X"].value
+            self._update_trust_region()
+            """self.X_bar = self.variables["X"].value
             self.U_bar = self.variables["U"].value
-            self.p_bar = self.variables["p"].value
+            self.p_bar = self.variables["p"].value"""
 
         # Example data: sequence from array
         mycmds, mystates = self._extract_seq_from_array()
@@ -270,7 +270,6 @@ class SatellitePlanner:
             "r_bar": cvx.Parameter((n_x, K - 1)),
             # linearized planets constraints parameters
             "C_coll_p": [[cvx.Parameter((1, n_x)) for _ in range(num_planets)] for _ in range(K)],
-            "G_coll_p": [[cvx.Parameter((1, n_p)) for _ in range(num_planets)] for _ in range(K)],
             "r_coll_p": [[cvx.Parameter() for _ in range(num_planets)] for _ in range(K)],
             # trust region radius
             "eta_tr": cvx.Parameter(nonneg=True),
@@ -320,9 +319,7 @@ class SatellitePlanner:
         planets_constraints = []
         for k in range(K):
             for j in range(num_planets):
-                planets_constraints.append(
-                    P["C_coll_p"][k][j] @ X[:, k] + P["G_coll_p"][k][j] @ p + P["r_coll_p"][k][j] <= nu_s_p[j, k]
-                )
+                planets_constraints.append(P["C_coll_p"][k][j] @ X[:, k] + P["r_coll_p"][k][j] <= nu_s_p[j, k])
 
         # asteroids constraints
         asteroids_constraints = []
@@ -356,9 +353,10 @@ class SatellitePlanner:
             # max_time
             p <= p_max,
             p >= 0,
-            # positive slack variables
-            # nu_s_p >= 0,
+            # positivity of collision slack variables
+            nu_s_p >= 0,
         ]
+
         if num_asteroids != 0:
             gen_constraints.append(nu_s_a >= 0)
 
@@ -392,15 +390,11 @@ class SatellitePlanner:
         # average control component
         average_input = cvx.sum(cvx.abs(U)) / K
         # cost of slack variables that must be heavily penalized
-        slack_cost_wa = lam * (cvx.norm1(nu) + cvx.norm1(nu_s_p) + cvx.norm1(nu_ic) + cvx.norm1(nu_tc))
+        slack_cost = lam * (cvx.norm1(nu) + cvx.norm1(nu_s_p) + cvx.norm1(nu_ic) + cvx.norm1(nu_tc))
         if num_asteroids != 0:
-            slack_cost_a = lam * cvx.norm1(nu_s_a)
-        else:
-            slack_cost_a = 0
+            slack_cost += lam * cvx.norm1(nu_s_a)
 
-        objective = (
-            self.params.weight_p @ p + slack_cost_wa + slack_cost_a + 0.01 * travelled_distance + 0.01 * average_input
-        )
+        objective = self.params.weight_p @ p + slack_cost + 0.01 * travelled_distance + 0.01 * average_input
 
         return cvx.Minimize(objective)
 
@@ -453,8 +447,6 @@ class SatellitePlanner:
                 C_val[0, 1] = -2 * dy
                 # C
                 P["C_coll_p"][k][j].value = C_val
-                # G
-                P["G_coll_p"][k][j].value = np.zeros((1, n_p))
                 # r
                 P["r_coll_p"][k][j].value = -(dx**2) - (dy**2) + r_safe_sq - C_val[0, 0] * bar_x - C_val[0, 1] * bar_y
 
