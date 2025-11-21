@@ -182,10 +182,12 @@ class SatellitePlanner:
                 print(np.max(self.variables["nu_tc"].value))
                 break
 
-            # self._update_trust_region()
+            self._update_trust_region()
+            """
             self.X_bar = self.variables["X"].value
             self.U_bar = self.variables["U"].value
             self.p_bar = self.variables["p"].value
+            """
 
         # Example data: sequence from array
         mycmds, mystates = self._extract_seq_from_array()

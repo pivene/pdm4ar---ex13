@@ -73,6 +73,8 @@ class SatelliteAgent(Agent):
         self.planets = planets
         self.asteroids = asteroids
         self.plan_start_time = 0.0
+        self.max_replanning = 15
+        self.replanning_iter = 0
 
     def on_episode_init(self, init_sim_obs: InitSimObservations):
         """
@@ -108,6 +110,8 @@ class SatelliteAgent(Agent):
         # which is then recomputed only if necessary.
         self.cmds_plan, self.state_traj = self.planner.compute_trajectory(self.init_state, self.goal_state)
         self.plan_start_time = 0.0
+        self.max_replanning = 7
+        self.replanning_iter = 0
 
     def get_commands(self, sim_obs: SimObservations) -> SatelliteCommands:
         """
@@ -147,12 +151,14 @@ class SatelliteAgent(Agent):
         pos_error = (dx**2 + dy**2) ** 0.5
         angle_error = abs(dpsi)
 
-        if pos_error > pos_tol or angle_error > dir_tol:
-            self.cmds_plan, self.state_traj = self.planner.compute_trajectory(current_state, self.goal_state)
-            # new plan starts "now"
-            self.plan_start_time = float(sim_obs.time)
-            # for this same step, recompute command using new plan
-            t_rel = 0.0
+        if self.replanning_iter <= self.max_replanning:
+            if pos_error > pos_tol or angle_error > dir_tol:
+                self.replanning_iter += 1
+                self.cmds_plan, self.state_traj = self.planner.compute_trajectory(current_state, self.goal_state)
+                # new plan starts "now"
+                self.plan_start_time = float(sim_obs.time)
+                # for this same step, recompute command using new plan
+                t_rel = 0.0
 
         # ZeroOrderHold
         # cmds = self.cmds_plan.at_or_previous(sim_obs.time)
