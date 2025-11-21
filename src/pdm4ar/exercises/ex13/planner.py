@@ -182,10 +182,10 @@ class SatellitePlanner:
                 print(np.max(self.variables["nu_tc"].value))
                 break
 
-            self._update_trust_region()
-            """self.X_bar = self.variables["X"].value
+            # self._update_trust_region()
+            self.X_bar = self.variables["X"].value
             self.U_bar = self.variables["U"].value
-            self.p_bar = self.variables["p"].value"""
+            self.p_bar = self.variables["p"].value
 
         # Example data: sequence from array
         mycmds, mystates = self._extract_seq_from_array()
@@ -622,11 +622,16 @@ class SatellitePlanner:
         defects = []
         X_nl = self.integrator.integrate_nonlinear_piecewise(X, U, p)
         for k in range(K - 1):
-            A_k = cvx.reshape(P["A_bar"][:, k], (n_x, n_x))
-            Bm_k = cvx.reshape(P["B_minus_bar"][:, k], (n_x, n_u))
-            Bp_k = cvx.reshape(P["B_plus_bar"][:, k], (n_x, n_u))
-            F_k = cvx.reshape(P["F_bar"][:, k], (n_x, n_p))
-            r_k = P["r_bar"][:, k]
+            A_bar = P["A_bar"][:, k].value
+            B_minus_bar = P["B_minus_bar"][:, k].value
+            B_plus_bar = P["B_minus_bar"][:, k].value
+            F_bar = P["F_bar"][:, k].value
+            r_bar = P["r_bar"][:, k].value
+            A_k = A_bar.reshape((n_x, n_x), order="F")
+            Bm_k = B_minus_bar.reshape((n_x, n_u), order="F")
+            Bp_k = B_plus_bar.reshape((n_x, n_u), order="F")
+            F_k = F_bar.reshape((n_x, n_p), order="F")
+            r_k = r_bar
             defects.append(-X_nl[:, k + 1] + (A_k @ X[:, k] + Bp_k @ U[:, k + 1] + Bm_k @ U[:, k] + F_k @ p + r_k))
 
         # Dynamic violation
