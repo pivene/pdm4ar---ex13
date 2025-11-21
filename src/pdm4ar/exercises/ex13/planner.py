@@ -182,12 +182,10 @@ class SatellitePlanner:
                 print(np.max(self.variables["nu_tc"].value))
                 break
 
-            self._update_trust_region()
-            """
+            # self._update_trust_region()
             self.X_bar = self.variables["X"].value
             self.U_bar = self.variables["U"].value
             self.p_bar = self.variables["p"].value
-            """
 
         # Example data: sequence from array
         mycmds, mystates = self._extract_seq_from_array()
@@ -346,9 +344,6 @@ class SatellitePlanner:
             X[:, 0] - P["init_vec"] - nu_ic == 0,
             # final state
             X[:, -1] - P["goal_vec"] - nu_tc == 0,
-            # final velocity
-            X[3, -1] == 0,
-            X[4, -1] == 0,
             # control inputs at start and goal
             U[:, 0] == 0,
             U[:, K - 1] == 0,
