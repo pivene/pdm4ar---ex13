@@ -344,6 +344,9 @@ class SatellitePlanner:
             X[:, 0] - P["init_vec"] - nu_ic == 0,
             # final state
             X[:, -1] - P["goal_vec"] - nu_tc == 0,
+            # final velocity
+            X[3, -1] == 0,
+            X[4, -1] == 0,
             # control inputs at start and goal
             U[:, 0] == 0,
             U[:, K - 1] == 0,
@@ -385,16 +388,12 @@ class SatellitePlanner:
         nu_ic = self.variables["nu_ic"]
         nu_tc = self.variables["nu_tc"]
 
-        # travelled distance component
-        travelled_distance = cvx.sum([cvx.norm(X[0:2, k + 1] - X[0:2, k], 2) for k in range(K - 1)])
-        # average control component
-        average_input = cvx.sum(cvx.abs(U)) / K
         # cost of slack variables that must be heavily penalized
         slack_cost = lam * (cvx.norm1(nu) + cvx.norm1(nu_s_p) + cvx.norm1(nu_ic) + cvx.norm1(nu_tc))
         if num_asteroids != 0:
             slack_cost += lam * cvx.norm1(nu_s_a)
 
-        objective = self.params.weight_p @ p + slack_cost + 0.01 * travelled_distance + 0.01 * average_input
+        objective = self.params.weight_p @ p + slack_cost
 
         return cvx.Minimize(objective)
 
@@ -606,14 +605,6 @@ class SatellitePlanner:
         n_u = self.satellite.n_u
         n_p = self.satellite.n_p
 
-        # Travelled distance component
-        travelled_distance = np.sum([np.linalg.norm(X[0:2, k + 1] - X[0:2, k], 2) for k in range(K - 1)])
-        print("travel_distance = ", travelled_distance)
-
-        # Average control component
-        average_input = np.sum(np.abs(U)) / K
-        print("average_input = ", average_input)
-
         # Time cost component
         time_cost = float(self.params.weight_p @ p)
         print("time_cost = ", time_cost)
@@ -693,12 +684,11 @@ class SatellitePlanner:
 
         # Total penalty replacing the slack variables
         slack_penalty = lam * (dyn_violation + init_violation + final_violation + p_violation)
-        print("slack_penalty = ", slack_penalty)
         if num_asteroids != 0:
             slack_penalty += lam * a_violation
 
         # Final nonlinear cost
-        J = time_cost + slack_penalty + 0.01 * travelled_distance + 0.01 * average_input
+        J = time_cost + slack_penalty
 
         return float(J)
 
