@@ -1,5 +1,7 @@
 from dataclasses import dataclass
+from math import pi
 from typing import Sequence
+import numpy as np
 
 from dg_commons import DgSampledSequence, PlayerName
 from dg_commons.sim import SimObservations, InitSimObservations
@@ -70,6 +72,7 @@ class SatelliteAgent(Agent):
         self.init_state = init_state
         self.planets = planets
         self.asteroids = asteroids
+        self.plan_start_time = 0.0
 
     def on_episode_init(self, init_sim_obs: InitSimObservations):
         """
@@ -104,6 +107,7 @@ class SatelliteAgent(Agent):
         # Don't think there's nothing to do here. At the beginning of the simulation, we compute the the full planned trajectory,
         # which is then recomputed only if necessary.
         self.cmds_plan, self.state_traj = self.planner.compute_trajectory(self.init_state, self.goal_state)
+        self.plan_start_time = 0.0
 
     def get_commands(self, sim_obs: SimObservations) -> SatelliteCommands:
         """
@@ -123,27 +127,37 @@ class SatelliteAgent(Agent):
         assert isinstance(c_state, SatelliteState)
         current_state = c_state
 
+        # time relative to start of the current plan
+        t_rel = float(sim_obs.time) - self.plan_start_time
         self.actual_trajectory.append(current_state)
-        expected_state = self.state_traj.at_interp(sim_obs.time)
+        expected_state = self.state_traj.at_interp(t_rel)
 
         # plotting the trajectory every 2.5 sec (this is optional, for better visualization)
         if Config.PLOT and int(10 * sim_obs.time) % 25 == 0:
             plot_traj(self.state_traj, self.actual_trajectory)
 
         pos_tol = 0.5
-        dir_tol = 0.5
+        dir_tol = pi / 6
 
         dx = current_state.x - expected_state.x
         dy = current_state.y - expected_state.y
-        dpsi = current_state.psi - expected_state.psi
+        diff = current_state.psi - expected_state.psi
+        dpsi = np.abs((diff + np.pi) % (2 * np.pi) - np.pi)
 
         pos_error = (dx**2 + dy**2) ** 0.5
         angle_error = abs(dpsi)
 
+        if pos_error > pos_tol or angle_error > dir_tol:
+            self.cmds_plan, self.state_traj = self.planner.compute_trajectory(current_state, self.goal_state)
+            # new plan starts "now"
+            self.plan_start_time = float(sim_obs.time)
+            # for this same step, recompute command using new plan
+            t_rel = 0.0
+
         # ZeroOrderHold
         # cmds = self.cmds_plan.at_or_previous(sim_obs.time)
         # FirstOrderHold
-        cmds = self.cmds_plan.at_interp(sim_obs.time)
+        cmds = self.cmds_plan.at_interp(t_rel)
 
         return cmds
 
