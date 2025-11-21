@@ -624,7 +624,14 @@ class SatellitePlanner:
 
         # Compute defects
         X_nl = self.integrator.integrate_nonlinear_piecewise(X, U, p)
-        defects = X[:, 1:] - X_nl[:, 1:]
+        defects = X - X_nl
+        print("defects not corrected: ", defects)
+
+        # correc the angle difference to be within [0,pi)
+        dpsi_og = X[2, :] - X_nl[2, :]
+        dpsi_abs = np.abs((dpsi_og + np.pi) % (2 * np.pi) - np.pi)
+        defects[2, :] = dpsi_abs
+        print("corrected defects: ", defects)
 
         # Dynamic violation
         dyn_violation = np.sum(np.abs(defects))
@@ -640,25 +647,7 @@ class SatellitePlanner:
         final_violation = np.sum(np.abs(X[:, -1] - goal))
         print("final_violation = ", final_violation)
 
-        """pos_err = np.linalg.norm(
-            [
-                np.maximum(np.abs(X_terminal[0] - goal[0]), 0),
-                np.maximum(np.abs(X_terminal[1] - goal[1]), 0),
-            ]
-        )
-        dir_err = np.maximum(np.abs(X_terminal[2] - goal[2]), 0)
-        vel_err = np.linalg.norm(
-            [
-                np.maximum(np.abs(X_terminal[3] - goal[3]), 0),
-                np.maximum(np.abs(X_terminal[4] - goal[4]), 0),
-                np.maximum(np.abs(X_terminal[5] - goal[5]), 0),
-            ]
-        )"""
-
-        # term_violation = pos_err + dir_err + vel_err
-
         # planets constraint violation
-        # Satellite safety radius (same logic as in convexification)
         sat_radius = np.sqrt((self.sg.w_half + self.sg.w_panel) ** 2 + max(self.sg.l_f, self.sg.l_r) ** 2) * 1.1
 
         p_violation = 0.0
@@ -673,6 +662,7 @@ class SatellitePlanner:
                 r_safe = sat_radius + obs_r
                 dist = np.sqrt((sat_x - obs_x) ** 2 + (sat_y - obs_y) ** 2)
                 p_violation += np.maximum(r_safe - dist, 0.0)
+
         print("p_violation = ", p_violation)
         a_violation = 0.0
         num_asteroids = len(self.asteroids)
@@ -690,16 +680,14 @@ class SatellitePlanner:
                     vel_x = asteroid.velocity[0]
                     vel_y = asteroid.velocity[1]
                     obs_r = asteroid.radius
-
                     # Calculate asteroid position at time t_k
                     obs_x = start_x + vel_x * t_k
                     obs_y = start_y + vel_y * t_k
 
                     r_safe = sat_radius + obs_r
-
                     dist = np.sqrt((sat_x - obs_x) ** 2 + (sat_y - obs_y) ** 2)
-
                     a_violation += np.maximum(r_safe - dist, 0.0)
+
         print("a_violation = ", a_violation)
 
         # Total penalty replacing the slack variables
