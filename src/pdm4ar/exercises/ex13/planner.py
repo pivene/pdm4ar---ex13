@@ -599,8 +599,12 @@ class SatellitePlanner:
         """
         Compute the nonlinear cost.
         """
+        P = self.problem_parameters
         K = self.params.K
         lam = self.params.lambda_nu
+        n_x = self.satellite.n_x
+        n_u = self.satellite.n_u
+        n_p = self.satellite.n_p
 
         # Travelled distance component
         travelled_distance = np.sum([np.linalg.norm(X[0:2, k + 1] - X[0:2, k], 2) for k in range(K - 1)])
@@ -615,15 +619,15 @@ class SatellitePlanner:
         print("time_cost = ", time_cost)
 
         # Compute defects
+        defects = []
         X_nl = self.integrator.integrate_nonlinear_piecewise(X, U, p)
-        defects = X - X_nl
-        print("defects not corrected: ", defects)
-
-        # correc the angle difference to be within [0,pi)
-        dpsi_og = X[2, :] - X_nl[2, :]
-        dpsi_abs = np.abs((dpsi_og + np.pi) % (2 * np.pi) - np.pi)
-        defects[2, :] = dpsi_abs
-        print("corrected defects: ", defects)
+        for k in range(K - 1):
+            A_k = cvx.reshape(P["A_bar"][:, k], (n_x, n_x))
+            Bm_k = cvx.reshape(P["B_minus_bar"][:, k], (n_x, n_u))
+            Bp_k = cvx.reshape(P["B_plus_bar"][:, k], (n_x, n_u))
+            F_k = cvx.reshape(P["F_bar"][:, k], (n_x, n_p))
+            r_k = P["r_bar"][:, k]
+            defects.append(-X_nl[:, k + 1] + (A_k @ X[:, k] + Bp_k @ U[:, k + 1] + Bm_k @ U[:, k] + F_k @ p + r_k))
 
         # Dynamic violation
         dyn_violation = np.sum(np.abs(defects))
