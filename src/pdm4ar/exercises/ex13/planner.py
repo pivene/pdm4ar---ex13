@@ -5,6 +5,8 @@ from typing import Optional
 import cvxpy as cvx
 from dg_commons import PlayerName
 from dg_commons.seq import DgSampledSequence
+from dg_commons.sim.goals import PlanningGoal
+from pdm4ar.exercises_def.ex13.goal import SpaceshipTarget, DockingTarget
 from dg_commons.sim.models.obstacles_dyn import DynObstacleState
 from dg_commons.sim.models.satellite import SatelliteCommands, SatelliteState
 from dg_commons.sim.models.satellite_structures import (
@@ -44,7 +46,7 @@ class SolverParameters:
     beta: float = 3.2  # mult factor trust region update
 
     # Set max time
-    p_max: float = 100
+    p_max: float = 60
 
     # Discretization constants
     K: int = 50  # number of discretization steps
@@ -64,6 +66,7 @@ class SatellitePlanner:
     sp: SatelliteParameters
     params: SolverParameters
     problem: Optional[cvx.Problem]
+    goal: PlanningGoal
 
     # Simpy variables
     x: spy.Matrix
@@ -84,6 +87,7 @@ class SatellitePlanner:
         asteroids: dict[PlayerName, AsteroidParams],
         sg: SatelliteGeometry,
         sp: SatelliteParameters,
+        goal: PlanningGoal,
     ):
         """
         Pass environment information to the planner.
@@ -92,6 +96,7 @@ class SatellitePlanner:
         self.asteroids = asteroids
         self.sg = sg
         self.sp = sp
+        self.goal = goal
 
         # Solver Parameters
         self.params = SolverParameters()
@@ -112,23 +117,18 @@ class SatellitePlanner:
         # Variables
         self.variables = self._get_variables()
         num_asteroids = len(self.asteroids)
+        num_planets = len(self.planets)
         K = self.params.K
         if num_asteroids != 0:
             self.variables.update({"nu_s_a": cvx.Variable((num_asteroids, K))})
+        if num_planets != 0:
+            self.variables.update({"nu_s_p": cvx.Variable((num_planets, K))})
+        if isinstance(self.goal, DockingTarget):
+            self.variables.update({"nu_s_dock": cvx.Variable(K - 6)})
+            self.variables.update({"nu_pos_dock": cvx.Variable(6)})
 
         # Problem Parameters
         self.problem_parameters = self._get_problem_parameters()
-        n_x = self.satellite.n_x
-        n_p = self.satellite.n_p
-        if num_asteroids != 0:
-            self.problem_parameters.update(
-                {
-                    # linearized asteroids constraints parameters
-                    "C_coll_a": [[cvx.Parameter((1, n_x)) for _ in range(num_asteroids)] for _ in range(K)],
-                    "G_coll_a": [[cvx.Parameter((1, n_p)) for _ in range(num_asteroids)] for _ in range(K)],
-                    "r_coll_a": [[cvx.Parameter() for _ in range(num_asteroids)] for _ in range(K)],
-                }
-            )
 
     def compute_trajectory(
         self, init_state: SatelliteState, goal_state: DynObstacleState
@@ -157,10 +157,20 @@ class SatellitePlanner:
         self._set_goal()
 
         # Initial reference
-        self.X_bar, self.U_bar, self.p_bar = self.initial_guess()
+        X_bar, U_bar, p_bar = self.initial_guess()
+        # update self.
+        self.X_bar = X_bar
+        self.U_bar = U_bar
+        self.p_bar = p_bar
+
         constraints = self._get_constraints()
         objective = self._get_objective()
         self.problem = cvx.Problem(objective, constraints)
+
+        # update prob params
+        self.problem_parameters["X_bar"].value = X_bar
+        self.problem_parameters["U_bar"].value = U_bar
+        self.problem_parameters["p_bar"].value = p_bar
 
         for i in range(self.params.max_iterations):
             print(i)
@@ -177,12 +187,32 @@ class SatellitePlanner:
                 # print slack variables for debugging
                 # missing slck for asteroids
                 print(np.max(self.variables["nu"].value))
-                print(np.max(self.variables["nu_s_p"].value))
+                if len(self.planets) != 0:
+                    print(np.max(self.variables["nu_s_p"].value))
+                if len(self.asteroids) != 0:
+                    print(np.max(self.variables["nu_s_a"].value))
                 print(np.max(self.variables["nu_ic"].value))
                 print(np.max(self.variables["nu_tc"].value))
                 break
 
+            print(
+                np.max(self.variables["nu"].value),
+                np.max(self.variables["nu_ic"].value),
+                np.max(self.variables["nu_tc"].value),
+            )
+            if len(self.planets) != 0:
+                print(np.max(self.variables["nu_s_p"].value))
+            if len(self.asteroids) != 0:
+                print(np.max(self.variables["nu_s_a"].value))
+            if isinstance(self.goal, DockingTarget):
+                print(np.max(self.variables["nu_s_dock"].value))
+                print(np.max(self.variables["nu_pos_dock"].value))
+
             # self._update_trust_region()
+            # update both prob params and self.
+            self.problem_parameters["X_bar"].value = self.variables["X"].value
+            self.problem_parameters["U_bar"].value = self.variables["U"].value
+            self.problem_parameters["p_bar"].value = self.variables["p"].value
             self.X_bar = self.variables["X"].value
             self.U_bar = self.variables["U"].value
             self.p_bar = self.variables["p"].value
@@ -212,8 +242,9 @@ class SatellitePlanner:
         for k in range(K):
             tau = k / (K - 1)
             X_bar[:, k] = (1 - tau) * init_vec + tau * goal_vec
+
         # Initial guess for time
-        p_bar[0] = 10
+        p_bar[0] = 15
 
         return X_bar, U_bar, p_bar
 
@@ -241,7 +272,6 @@ class SatellitePlanner:
             "p": cvx.Variable(n_p),
             # slack, virtual control
             "nu": cvx.Variable((n_x, K - 1)),
-            "nu_s_p": cvx.Variable((num_planets, K)),
             "nu_ic": cvx.Variable(n_x),
             "nu_tc": cvx.Variable(n_x),
         }
@@ -256,9 +286,12 @@ class SatellitePlanner:
         n_u = self.satellite.n_u
         n_p = self.satellite.n_p
         K = self.params.K
-        num_planets = len(self.planets)
 
         problem_parameters = {
+            # reference trajectory
+            "X_bar": cvx.Parameter((n_x, K)),
+            "U_bar": cvx.Parameter((n_u, K)),
+            "p_bar": cvx.Parameter(n_p),
             # vector form of initial and goal states
             "init_vec": cvx.Parameter(n_x),
             "goal_vec": cvx.Parameter(n_x),
@@ -268,9 +301,6 @@ class SatellitePlanner:
             "B_plus_bar": cvx.Parameter((n_x * n_u, K - 1)),
             "F_bar": cvx.Parameter((n_x * n_p, K - 1)),
             "r_bar": cvx.Parameter((n_x, K - 1)),
-            # linearized planets constraints parameters
-            "C_coll_p": [[cvx.Parameter((1, n_x)) for _ in range(num_planets)] for _ in range(K)],
-            "r_coll_p": [[cvx.Parameter() for _ in range(num_planets)] for _ in range(K)],
             # trust region radius
             "eta_tr": cvx.Parameter(nonneg=True),
         }
@@ -288,7 +318,6 @@ class SatellitePlanner:
         p_max = self.params.p_max
 
         P = self.problem_parameters
-        eta_tr = P["eta_tr"]
 
         num_planets = len(self.planets)
         num_asteroids = len(self.asteroids)
@@ -297,11 +326,6 @@ class SatellitePlanner:
         U = self.variables["U"]
         p = self.variables["p"]
         nu = self.variables["nu"]
-        nu_s_p = self.variables["nu_s_p"]
-        if num_asteroids != 0:
-            nu_s_a = self.variables["nu_s_a"]
-        nu_ic = self.variables["nu_ic"]
-        nu_tc = self.variables["nu_tc"]
 
         # dynamic constraints
         dynamic_constraints = []
@@ -316,52 +340,162 @@ class SatellitePlanner:
             )
 
         # planets constraints
+        sat_radius = np.sqrt((self.sg.w_half + self.sg.w_panel) ** 2 + max(self.sg.l_f, self.sg.l_r) ** 2)
         planets_constraints = []
-        for k in range(K):
-            for j in range(num_planets):
-                planets_constraints.append(P["C_coll_p"][k][j] @ X[:, k] + P["r_coll_p"][k][j] <= nu_s_p[j, k])
+        if num_planets != 0:
+            for k in range(K):
+                bar_x = self.problem_parameters["X_bar"][0, k]
+                bar_y = self.problem_parameters["X_bar"][1, k]
+                n_ps = 0
+                for planet in self.planets.values():
+                    obs_x = planet.center[0]
+                    obs_y = planet.center[1]
+                    obs_r = planet.radius
+
+                    dx = bar_x - obs_x
+                    dy = bar_y - obs_y
+
+                    r_safe_sq = (sat_radius + obs_r) ** 2
+
+                    r = -(dx**2) - (dy**2) + r_safe_sq + 2 * dx * bar_x + 2 * dy * bar_y
+
+                    planets_constraints.append(
+                        -2 * dx * self.variables["X"][0, k] - 2 * dy * self.variables["X"][1, k] + r
+                        <= self.variables["nu_s_p"][n_ps, k]
+                    )
+
+                    n_ps += 1
 
         # asteroids constraints
         asteroids_constraints = []
         if num_asteroids != 0:
             for k in range(K):
-                for j in range(num_asteroids):
-                    asteroids_constraints.append(
-                        P["C_coll_a"][k][j] @ X[:, k] + P["G_coll_a"][k][j] @ p + P["r_coll_a"][k][j] <= nu_s_a[j, k]
+                tau_k = k / (K - 1)
+                t_k = tau_k * self.problem_parameters["p_bar"][0]
+                bar_x = self.problem_parameters["X_bar"][0, k]
+                bar_y = self.problem_parameters["X_bar"][1, k]
+                j = 0
+                for asteroid in self.asteroids.values():
+                    obs_x0 = asteroid.start[0]
+                    obs_y0 = asteroid.start[1]
+                    obs_vx = asteroid.velocity[0]
+                    obs_vy = asteroid.velocity[1]
+                    obs_r = asteroid.radius
+                    theta = asteroid.orientation
+                    # correct for orientation
+                    world_vx = obs_vx * np.cos(theta) - obs_vy * np.sin(theta)
+                    world_vy = obs_vy * np.cos(theta) + obs_vx * np.sin(theta)
+                    # current center coordinates
+                    obs_x = obs_x0 + world_vx * t_k
+                    obs_y = obs_y0 + world_vy * t_k
+
+                    dx = bar_x - obs_x
+                    dy = bar_y - obs_y
+
+                    r_safe_sq = (sat_radius + obs_r) ** 2
+
+                    dp = -2 * tau_k * (dx * obs_vx + dy * obs_vy)
+
+                    r = (
+                        -(dx**2)
+                        - (dy**2)
+                        + r_safe_sq
+                        + 2 * dx * bar_x
+                        + 2 * dy * bar_y
+                        + dp * self.problem_parameters["p_bar"][0]
                     )
+
+                    asteroids_constraints.append(
+                        -2 * dx * self.variables["X"][0, k]
+                        - 2 * dy * self.variables["X"][1, k]
+                        - dp * self.variables["p"][0]
+                        + r
+                        <= self.variables["nu_s_a"][j, k]
+                    )
+
+                    j += 1
 
         # trust region constraints
         tr_constraints = []
         for k in range(K):
             dx = X[:, k] - self.X_bar[:, k]
             du = U[:, k] - self.U_bar[:, k]
-            dp = p - self.p_bar
-            tr_constraints.append(cvx.norm(dx, 2) + cvx.norm(du, 2) + cvx.norm(dp, 2) <= eta_tr)
+            dp = p - self.p_bar[0]
+            tr_constraints.append(
+                cvx.norm(dx, 2) + cvx.norm(du, 2) + cvx.norm(dp, 2) <= self.problem_parameters["eta_tr"]
+            )
 
         # general constraints
         gen_constraints = [
             # initial state
-            X[:, 0] - P["init_vec"] - nu_ic == 0,
+            self.variables["X"][:, 0] - self.problem_parameters["init_vec"] - self.variables["nu_ic"] == 0,
             # final state
-            X[:, -1] - P["goal_vec"] - nu_tc == 0,
+            self.variables["X"][:, -1] - self.problem_parameters["goal_vec"] - self.variables["nu_tc"] == 0,
             # control inputs at start and goal
-            U[:, 0] == 0,
-            U[:, K - 1] == 0,
+            self.variables["U"][:, 0] == 0,
+            self.variables["U"][:, K - 1] == 0,
             # control inputs within limits
-            U >= self.sp.F_limits[0],
-            U <= self.sp.F_limits[1],
+            self.variables["U"] >= self.sp.F_limits[0],
+            self.variables["U"] <= self.sp.F_limits[1],
             # max_time
-            p <= p_max,
-            p >= 0,
-            # positivity of collision slack variables
-            nu_s_p >= 0,
+            self.variables["p"] <= p_max,
+            self.variables["p"] >= 0,
+            # within bounds
+            self.variables["X"][0, :] >= -11 + sat_radius,
+            self.variables["X"][1, :] >= -11 + sat_radius,
+            self.variables["X"][0, :] <= 11 - sat_radius,
+            self.variables["X"][1, :] <= 11 - sat_radius,
         ]
 
+        if num_planets != 0:
+            gen_constraints.append(self.variables["nu_s_p"] >= 0)
+
         if num_asteroids != 0:
-            gen_constraints.append(nu_s_a >= 0)
+            gen_constraints.append(self.variables["nu_s_a"] >= 0)
+
+        # docking constraints
+        docking_constraints = []
+        if isinstance(self.goal, DockingTarget):
+            gen_constraints.append(self.variables["nu_s_dock"] >= 0)
+            A, B, C, A1, A2, half_p_angle = self.goal.get_landing_constraint_points()
+            segment = np.array([A1[0] - A2[0], A1[1] - A2[1]])  # from A2 to A1
+            len_seg = np.linalg.norm(segment)
+            norm_seg = segment / len_seg
+            midpoint = np.array([A2[0] + norm_seg[0] * len_seg / 2, A2[1] + norm_seg[1] * len_seg / 2])
+            obs_x = midpoint[0]
+            obs_y = midpoint[1]
+            obs_r = len_seg / 2
+            for k in range(K - 6):
+                bar_x = self.problem_parameters["X_bar"][0, k]
+                bar_y = self.problem_parameters["X_bar"][1, k]
+                dx = bar_x - obs_x
+                dy = bar_y - obs_y
+
+                r_safe_sq = (sat_radius + obs_r) ** 2
+
+                r = -(dx**2) - (dy**2) + r_safe_sq + 2 * dx * bar_x + 2 * dy * bar_y
+
+                docking_constraints.append(
+                    -2 * dx * self.variables["X"][0, k] - 2 * dy * self.variables["X"][1, k] + r
+                    <= self.variables["nu_s_dock"][k]
+                )
+            seg_A_B = np.array([B[0] - A[0], B[1] - A[1]])  # from A to B
+            seg_A_C = np.array([C[0] - A[0], C[1] - A[1]])  # from A to C
+            for local_i, k in enumerate(range(K - 6, K)):
+                xs = self.variables["X"][0, k]
+                ys = self.variables["X"][1, k]
+                expr1 = seg_A_B[0] * (xs - A[0]) + seg_A_B[1] * (ys - A[1])
+                docking_constraints.append(expr1 >= self.variables["nu_pos_dock"][local_i])
+                expr2 = seg_A_C[0] * (xs - A[0]) + seg_A_C[1] * (ys - A[1])
+                docking_constraints.append(expr2 >= self.variables["nu_pos_dock"][local_i])
 
         constraints = (
-            gen_constraints + dynamic_constraints + planets_constraints + asteroids_constraints + tr_constraints
+            gen_constraints
+            + dynamic_constraints
+            + planets_constraints
+            + asteroids_constraints
+            + tr_constraints
+            + docking_constraints
         )
 
         return constraints
@@ -371,26 +505,23 @@ class SatellitePlanner:
         Define objective for SCvx.
         """
         # Example objective
-        X = self.variables["X"]
-        U = self.variables["U"]
-        p = self.variables["p"]
-
+        num_planets = len(self.planets)
         num_asteroids = len(self.asteroids)
         K = self.params.K
-        lam = self.params.lambda_nu
-        nu = self.variables["nu"]
-        nu_s_p = self.variables["nu_s_p"]
-        if num_asteroids != 0:
-            nu_s_a = self.variables["nu_s_a"]
-        nu_ic = self.variables["nu_ic"]
-        nu_tc = self.variables["nu_tc"]
 
         # cost of slack variables that must be heavily penalized
-        slack_cost = lam * (cvx.norm1(nu) + cvx.norm1(nu_s_p) + cvx.norm1(nu_ic) + cvx.norm1(nu_tc))
+        slack_cost = self.params.lambda_nu * (
+            cvx.norm1(self.variables["nu"]) + cvx.norm1(self.variables["nu_ic"]) + cvx.norm1(self.variables["nu_tc"])
+        )
+        if num_planets != 0:
+            slack_cost += self.params.lambda_nu * cvx.norm1(self.variables["nu_s_p"])
         if num_asteroids != 0:
-            slack_cost += lam * cvx.norm1(nu_s_a)
+            slack_cost += self.params.lambda_nu * cvx.norm1(self.variables["nu_s_a"])
+        if isinstance(self.goal, DockingTarget):
+            slack_cost += self.params.lambda_nu * cvx.norm1(self.variables["nu_s_dock"])
+            slack_cost += self.params.lambda_nu * cvx.norm1(self.variables["nu_pos_dock"])
 
-        objective = self.params.weight_p @ p + slack_cost
+        objective = self.params.weight_p @ self.variables["p"] + slack_cost
 
         return cvx.Minimize(objective)
 
@@ -399,8 +530,6 @@ class SatellitePlanner:
         Perform convexification step, i.e. Linearization and Discretization
         and populate Problem Parameters.
         """
-        P = self.problem_parameters
-        K = self.params.K
         # ZOH
         # A_bar, B_bar, F_bar, r_bar = self.integrator.calculate_discretization(self.X_bar, self.U_bar, self.p_bar)
         # FOH
@@ -410,88 +539,11 @@ class SatellitePlanner:
         # HINT: be aware that the matrices returned by calculate_discretization are flattened in F order (this way affect your code later when you use them)
         # Therefore the matrices need to be reshaped
 
-        n_x = self.satellite.n_x
-        n_u = self.satellite.n_u
-        n_p = self.satellite.n_p
-        num_asteroids = len(self.asteroids)
-
-        P["A_bar"].value = A_bar
-        P["B_minus_bar"].value = B_minus_bar
-        P["B_plus_bar"].value = B_plus_bar
-        P["F_bar"].value = F_bar
-        P["r_bar"].value = r_bar
-
-        sat_radius = (
-            np.sqrt((self.sg.w_half + self.sg.w_panel) ** 2 + max(self.sg.l_f, self.sg.l_r) ** 2) * 1.1
-        )  # planets
-        planets_list = []
-        for planet in self.planets.values():
-            planets_list.append({"x": planet.center[0], "y": planet.center[1], "r": planet.radius})
-        # get the convexification of the obstacle for every time step
-        for k in range(K):
-            bar_x = self.X_bar[0, k]
-            bar_y = self.X_bar[1, k]
-            for j, obs in enumerate(planets_list):
-                obs_x = obs["x"]
-                obs_y = obs["y"]
-                obs_r = obs["r"]
-                r_safe_sq = (sat_radius + obs_r) ** 2
-                dx = bar_x - obs_x
-                dy = bar_y - obs_y
-                C_val = np.zeros((1, n_x))
-                C_val[0, 0] = -2 * dx
-                C_val[0, 1] = -2 * dy
-                # C
-                P["C_coll_p"][k][j].value = C_val
-                # r
-                P["r_coll_p"][k][j].value = -(dx**2) - (dy**2) + r_safe_sq - C_val[0, 0] * bar_x - C_val[0, 1] * bar_y
-
-        # asteroids
-        asteroids_list = []
-        for asteroid in self.asteroids.values():
-            asteroids_list.append(
-                {
-                    "x0": asteroid.start[0],
-                    "y0": asteroid.start[1],
-                    "vx": asteroid.velocity[0],
-                    "vy": asteroid.velocity[1],
-                    "r": asteroid.radius,
-                }
-            )
-
-        # get the convexification of the obstacle for every time step
-        if num_asteroids != 0:
-            for k in range(K):
-                tau_k = k / (K - 1)
-                t_k = tau_k * float(self.p_bar[0])
-                bar_x = self.X_bar[0, k]
-                bar_y = self.X_bar[1, k]
-                for j, obs in enumerate(asteroids_list):
-                    obs_x0 = obs["x0"]
-                    obs_y0 = obs["y0"]
-                    obs_vx = obs["vx"]
-                    obs_vy = obs["vy"]
-                    obs_r = obs["r"]
-                    # current center coordinates
-                    obs_x = obs_x0 + obs_vx * t_k
-                    obs_y = obs_y0 + obs_vy * t_k
-                    r_safe_sq = (sat_radius + obs_r) ** 2
-                    dx = bar_x - obs_x
-                    dy = bar_y - obs_y
-                    C_val = np.zeros((1, n_x))
-                    C_val[0, 0] = -2 * dx
-                    C_val[0, 1] = -2 * dy
-                    # C
-                    P["C_coll_a"][k][j].value = C_val
-                    # G
-                    val_g = -(dx**2) - (dy**2) + r_safe_sq
-                    dp = -2 * tau_k * (dx * obs_vx + dy * obs_vy)
-                    G_val = np.zeros((1, n_p))
-                    G_val[0, 0] = -dp
-                    P["G_coll_a"][k][j].value = G_val
-                    # r
-                    c_dot_x = C_val[0, 0] * bar_x + C_val[0, 1] * bar_y
-                    P["r_coll_a"][k][j].value = val_g - c_dot_x - G_val[0, 0] * float(self.p_bar[0])
+        self.problem_parameters["A_bar"].value = A_bar
+        self.problem_parameters["B_minus_bar"].value = B_minus_bar
+        self.problem_parameters["B_plus_bar"].value = B_plus_bar
+        self.problem_parameters["F_bar"].value = F_bar
+        self.problem_parameters["r_bar"].value = r_bar
 
     def _check_convergence(self) -> bool:
         """
@@ -499,22 +551,13 @@ class SatellitePlanner:
         """
         eps = self.params.stop_crit
 
-        X_star = self.variables["X"].value
-        p_star = self.variables["p"].value
+        diff_p = np.linalg.norm(self.variables["p"].value - self.problem_parameters["p_bar"].value)
 
-        if X_star is None or p_star is None:
-            return False
-
-        # Extract reference trajectory from previous iteration
-        X_ref = self.X_bar
-        p_ref = self.p_bar
-
-        diff_p = np.linalg.norm(p_star - p_ref)
-
-        diff_X = np.linalg.norm(X_star - X_ref, axis=0)
+        diff_X = np.linalg.norm(self.variables["X"].value - self.problem_parameters["X_bar"].value, axis=0)
         max_diff_X = np.max(diff_X)
 
         diff_tot = diff_p + max_diff_X
+        print(diff_tot)
 
         return bool(diff_tot < eps)
 
@@ -543,18 +586,13 @@ class SatellitePlanner:
         # Nonlinear cost of reference trajectory
         J_bar = float(self._J_lambda(self.X_bar, self.U_bar, self.p_bar))
         print("J_bar = ", J_bar)
-        X_star = self.variables["X"].value
-        U_star = self.variables["U"].value
-        p_star = self.variables["p"].value
 
         # Nonlinear cost of optimized trajectory
-        J_star = float(self._J_lambda(X_star, U_star, p_star))
+        J_star = float(self._J_lambda(self.variables["X"].value, self.variables["U"].value, self.variables["p"].value))
         print("J_star = ", J_star)
         den = J_bar - L_star
 
-        if den < 0:
-            print("denominatore rho NEGATIVO")
-        elif den == 0:
+        if den == 0:
             print("denominatore rho UGUALE A 0")
             rho = 0.0
         else:
@@ -585,9 +623,12 @@ class SatellitePlanner:
 
         # Update reference trajectory if accepted
         if accept:
-            self.X_bar = X_star.copy()
-            self.U_bar = U_star.copy()
-            self.p_bar = p_star.copy()
+            self.problem_parameters["X_bar"].value = self.variables["X"].value
+            self.problem_parameters["U_bar"].value = self.variables["U"].value
+            self.problem_parameters["p_bar"].value = self.variables["p"].value
+            self.X_bar = self.variables["X"].value
+            self.U_bar = self.variables["U"].value
+            self.p_bar = self.variables["p"].value
 
         return
 
@@ -610,11 +651,11 @@ class SatellitePlanner:
         defects = []
         X_nl = self.integrator.integrate_nonlinear_piecewise(X, U, p)
         for k in range(K - 1):
-            A_bar = P["A_bar"][:, k].value
-            B_minus_bar = P["B_minus_bar"][:, k].value
-            B_plus_bar = P["B_minus_bar"][:, k].value
-            F_bar = P["F_bar"][:, k].value
-            r_bar = P["r_bar"][:, k].value
+            A_bar = self.problem_parameters["A_bar"][:, k].value
+            B_minus_bar = self.problem_parameters["B_minus_bar"][:, k].value
+            B_plus_bar = self.problem_parameters["B_minus_bar"][:, k].value
+            F_bar = self.problem_parameters["F_bar"][:, k].value
+            r_bar = self.problem_parameters["r_bar"][:, k].value
             A_k = A_bar.reshape((n_x, n_x), order="F")
             Bm_k = B_minus_bar.reshape((n_x, n_u), order="F")
             Bp_k = B_plus_bar.reshape((n_x, n_u), order="F")
@@ -637,7 +678,7 @@ class SatellitePlanner:
         print("final_violation = ", final_violation)
 
         # planets constraint violation
-        sat_radius = np.sqrt((self.sg.w_half + self.sg.w_panel) ** 2 + max(self.sg.l_f, self.sg.l_r) ** 2) * 1.1
+        sat_radius = np.sqrt((self.sg.w_half + self.sg.w_panel) ** 2 + max(self.sg.l_f, self.sg.l_r) ** 2)
 
         p_violation = 0.0
         for k in range(K):
@@ -695,21 +736,16 @@ class SatellitePlanner:
         Create a DgSampledSequence from numpy arrays and timestamps.
         """
         K = self.params.K
-        VAR = self.variables
-
-        X = VAR["X"].value
-        U = VAR["U"].value
-        p = VAR["p"].value
 
         # Timestamps from 0 to final time
-        t_final = float(p)
-        ts = np.linspace(0.0, t_final, K)
+        t_final = float(self.variables["p"].value)
+        ts = tuple((i * t_final / (K - 1) for i in range(K)))
 
         # Commands
         cmds_list = []
         for k in range(K):
-            F_left = float(U[0, k])
-            F_right = float(U[1, k])
+            F_left = float(self.variables["U"].value[0, k])
+            F_right = float(self.variables["U"].value[1, k])
             cmds_list.append(SatelliteCommands(F_left, F_right))
 
         cmds_seq = DgSampledSequence[SatelliteCommands](timestamps=ts, values=cmds_list)
@@ -717,12 +753,12 @@ class SatellitePlanner:
         # States
         state_list = []
         for k in range(K):
-            x = float(X[0, k])
-            y = float(X[1, k])
-            psi = float(X[2, k])
-            vx = float(X[3, k])
-            vy = float(X[4, k])
-            dpsi = float(X[5, k])
+            x = float(self.variables["X"].value[0, k])
+            y = float(self.variables["X"].value[1, k])
+            psi = float(self.variables["X"].value[2, k])
+            vx = float(self.variables["X"].value[3, k])
+            vy = float(self.variables["X"].value[4, k])
+            dpsi = float(self.variables["X"].value[5, k])
             state_list.append(SatelliteState(x, y, psi, vx, vy, dpsi))
 
         state_seq = DgSampledSequence[SatelliteState](timestamps=ts, values=state_list)

@@ -73,7 +73,7 @@ class SatelliteAgent(Agent):
         self.planets = planets
         self.asteroids = asteroids
         self.plan_start_time = 0.0
-        self.max_replanning = 15
+        self.max_replanning = 5
         self.replanning_iter = 0
 
     def on_episode_init(self, init_sim_obs: InitSimObservations):
@@ -90,7 +90,13 @@ class SatelliteAgent(Agent):
         self.myname = init_sim_obs.my_name
         self.sg = init_sim_obs.model_geometry
         self.sp = init_sim_obs.model_params
-        self.planner = SatellitePlanner(planets=self.planets, asteroids=self.asteroids, sg=self.sg, sp=self.sp)
+        self.planner = SatellitePlanner(
+            planets=self.planets,
+            asteroids=self.asteroids,
+            sg=self.sg,
+            sp=self.sp,
+            goal=init_sim_obs.goal,
+        )
         assert isinstance(init_sim_obs.goal, SpaceshipTarget | DockingTarget)
         # make sure you consider both types of goals accordingly
         # (Docking is a subclass of SpaceshipTarget and may require special handling
@@ -140,7 +146,7 @@ class SatelliteAgent(Agent):
         if Config.PLOT and int(10 * sim_obs.time) % 25 == 0:
             plot_traj(self.state_traj, self.actual_trajectory)
 
-        pos_tol = 0.5
+        """pos_tol = 0.5
         dir_tol = pi / 6
 
         dx = current_state.x - expected_state.x
@@ -158,12 +164,12 @@ class SatelliteAgent(Agent):
                 # new plan starts "now"
                 self.plan_start_time = float(sim_obs.time)
                 # for this same step, recompute command using new plan
-                t_rel = 0.0
+                t_rel = 0.0"""
 
         # ZeroOrderHold
         # cmds = self.cmds_plan.at_or_previous(sim_obs.time)
         # FirstOrderHold
-        cmds = self.cmds_plan.at_interp(t_rel)
+        cmds = self.cmds_plan.at_interp(sim_obs.time)
 
         return cmds
 
