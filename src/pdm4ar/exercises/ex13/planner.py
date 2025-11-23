@@ -124,7 +124,7 @@ class SatellitePlanner:
         if num_planets != 0:
             self.variables.update({"nu_s_p": cvx.Variable((num_planets, K))})
         if isinstance(self.goal, DockingTarget):
-            self.variables.update({"nu_s_dock": cvx.Variable(K - 6)})
+            self.variables.update({"nu_s_dock": cvx.Variable(K - 5)})
             self.variables.update({"nu_pos_dock": cvx.Variable(6)})
 
         # Problem Parameters
@@ -465,7 +465,7 @@ class SatellitePlanner:
             obs_x = midpoint[0]
             obs_y = midpoint[1]
             obs_r = len_seg / 2
-            for k in range(K - 6):
+            for k in range(K - 5):
                 bar_x = self.problem_parameters["X_bar"][0, k]
                 bar_y = self.problem_parameters["X_bar"][1, k]
                 dx = bar_x - obs_x
