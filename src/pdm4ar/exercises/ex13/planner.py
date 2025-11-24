@@ -159,6 +159,11 @@ class SatellitePlanner:
         # Initial reference
         X_bar, U_bar, p_bar = self.initial_guess()
 
+        # update self.
+        self.X_bar = X_bar
+        self.U_bar = U_bar
+        self.p_bar = p_bar
+
         constraints = self._get_constraints()
         objective = self._get_objective()
         self.problem = cvx.Problem(objective, constraints)
@@ -167,10 +172,6 @@ class SatellitePlanner:
         self.problem_parameters["X_bar"].value = X_bar
         self.problem_parameters["U_bar"].value = U_bar
         self.problem_parameters["p_bar"].value = p_bar
-        # update self.
-        self.X_bar = X_bar
-        self.U_bar = U_bar
-        self.p_bar = p_bar
 
         for i in range(self.params.max_iterations):
             print(i)
@@ -208,14 +209,14 @@ class SatellitePlanner:
                 print(np.max(self.variables["nu_s_dock"].value))
                 print(np.max(self.variables["nu_pos_dock"].value))
 
-            self._update_trust_region()
-            """# update both prob params and self.
+            # self._update_trust_region()
+            # update both prob params and self.
             self.problem_parameters["X_bar"].value = self.variables["X"].value
             self.problem_parameters["U_bar"].value = self.variables["U"].value
             self.problem_parameters["p_bar"].value = self.variables["p"].value
             self.X_bar = self.variables["X"].value
             self.U_bar = self.variables["U"].value
-            self.p_bar = self.variables["p"].value"""
+            self.p_bar = self.variables["p"].value
 
         # Example data: sequence from array
         mycmds, mystates = self._extract_seq_from_array()
@@ -394,7 +395,7 @@ class SatellitePlanner:
 
                     r_safe_sq = (sat_radius + obs_r) ** 2
 
-                    dp = -2 * tau_k * (dx * obs_vx + dy * obs_vy)
+                    dp = -2 * tau_k * (dx * world_vx + dy * world_vy)
 
                     r = (
                         -(dx**2)
@@ -418,9 +419,9 @@ class SatellitePlanner:
         # trust region constraints
         tr_constraints = []
         for k in range(K):
-            dx = X[:, k] - self.problem_parameters["X_bar"][:, k]
-            du = U[:, k] - self.problem_parameters["U_bar"][:, k]
-            dp = p - self.problem_parameters["p_bar"][0]
+            dx = X[:, k] - self.X_bar[:, k]
+            du = U[:, k] - self.U_bar[:, k]
+            dp = p - self.p_bar[0]
             tr_constraints.append(
                 cvx.norm(dx, 2) + cvx.norm(du, 2) + cvx.norm(dp, 2) <= self.problem_parameters["eta_tr"]
             )
@@ -657,6 +658,15 @@ class SatellitePlanner:
         final_violation = np.sum(np.abs(X[:, -1] - goal))
         print("final_violation = ", final_violation)
 
+        # with trapz
+        """phi = lam * (init_violation + final_violation) + time_cost
+
+        gamma = self.compute_trapz(X, U, p)
+
+        # Final nonlinear cost
+        J = phi + gamma"""
+
+        # without trapz
         # Compute defects
         defects = []
         X_nl = self.integrator.integrate_nonlinear_piecewise(X, U, p)
@@ -677,23 +687,25 @@ class SatellitePlanner:
         dyn_violation = np.sum(np.abs(defects))
         print("dyn_violation = ", dyn_violation)
 
-        # planets constraint violation
         sat_radius = np.sqrt((self.sg.w_half + self.sg.w_panel) ** 2 + max(self.sg.l_f, self.sg.l_r) ** 2)
-
+        # planets constraint violation
         p_violation = 0.0
-        for k in range(K):
-            sat_x = X[0, k]
-            sat_y = X[1, k]
-            for planet in self.planets.values():
-                obs_x = planet.center[0]
-                obs_y = planet.center[1]
-                obs_r = planet.radius
+        num_planets = len(self.planets)
+        if num_planets != 0:
+            for k in range(K):
+                sat_x = X[0, k]
+                sat_y = X[1, k]
+                for planet in self.planets.values():
+                    obs_x = planet.center[0]
+                    obs_y = planet.center[1]
+                    obs_r = planet.radius
 
-                r_safe = sat_radius + obs_r
-                dist = np.sqrt((sat_x - obs_x) ** 2 + (sat_y - obs_y) ** 2)
-                p_violation += np.maximum(r_safe - dist, 0.0)
+                    r_safe = sat_radius + obs_r
+                    dist = np.sqrt((sat_x - obs_x) ** 2 + (sat_y - obs_y) ** 2)
+                    p_violation += np.maximum(r_safe - dist, 0.0)
 
         print("p_violation = ", p_violation)
+        # asteroids constraint violation
         a_violation = 0.0
         num_asteroids = len(self.asteroids)
         if num_asteroids != 0:
@@ -710,6 +722,10 @@ class SatellitePlanner:
                     vel_x = asteroid.velocity[0]
                     vel_y = asteroid.velocity[1]
                     obs_r = asteroid.radius
+                    theta = asteroid.orientation
+                    # correct for orientation
+                    world_vx = vel_x * np.cos(theta) - vel_y * np.sin(theta)
+                    world_vy = vel_y * np.cos(theta) + vel_x * np.sin(theta)
                     # Calculate asteroid position at time t_k
                     obs_x = start_x + vel_x * t_k
                     obs_y = start_y + vel_y * t_k
@@ -717,13 +733,43 @@ class SatellitePlanner:
                     r_safe = sat_radius + obs_r
                     dist = np.sqrt((sat_x - obs_x) ** 2 + (sat_y - obs_y) ** 2)
                     a_violation += np.maximum(r_safe - dist, 0.0)
-
         print("a_violation = ", a_violation)
 
+        # docking constraints violation
+        s_dock_viol = 0.0
+        pos_dock_viol = 0.0
+        if isinstance(self.goal, DockingTarget):
+            A, B, C, A1, A2, half_p_angle = self.goal.get_landing_constraint_points()
+            segment = np.array([A1[0] - A2[0], A1[1] - A2[1]])  # from A2 to A1
+            len_seg = np.linalg.norm(segment)
+            norm_seg = segment / len_seg
+            midpoint = np.array([A2[0] + norm_seg[0] * len_seg / 2, A2[1] + norm_seg[1] * len_seg / 2])
+            obs_x = midpoint[0]
+            obs_y = midpoint[1]
+            obs_r = len_seg / 2
+            r_safe = sat_radius + obs_r
+            for k in range(K - 5):
+                sat_x = X[0, k]
+                sat_y = X[1, k]
+
+                dist = np.sqrt((sat_x - obs_x) ** 2 + (sat_y - obs_y) ** 2)
+                s_dock_viol += np.maximum(r_safe - dist, 0.0)
+            seg_A_B = np.array([B[0] - A[0], B[1] - A[1]])  # from A to B
+            seg_A_C = np.array([C[0] - A[0], C[1] - A[1]])  # from A to C
+            for k in range(K - 6, K):
+                xs = X[0, k]
+                ys = X[1, k]
+                expr1 = seg_A_B[0] * (xs - A[0]) + seg_A_B[1] * (ys - A[1])
+                pos_dock_viol_k_1 = min(expr1, 0.0)
+                pos_dock_viol += np.abs(pos_dock_viol_k_1)
+                expr2 = seg_A_C[0] * (xs - A[0]) + seg_A_C[1] * (ys - A[1])
+                pos_dock_viol_k_2 = min(expr2, 0.0)
+                pos_dock_viol += np.abs(pos_dock_viol_k_2)
+
         # Total penalty replacing the slack variables
-        slack_penalty = lam * (dyn_violation + init_violation + final_violation + p_violation)
-        if num_asteroids != 0:
-            slack_penalty += lam * a_violation
+        slack_penalty = lam * (
+            dyn_violation + init_violation + final_violation + p_violation + a_violation + s_dock_viol + pos_dock_viol
+        )
 
         # Final nonlinear cost
         J = time_cost + slack_penalty
@@ -786,22 +832,57 @@ class SatellitePlanner:
                 sat_y = X[1, k]
 
                 for asteroid in self.asteroids.values():
-                    start_x = asteroid.start[0]
-                    start_y = asteroid.start[1]
-                    vel_x = asteroid.velocity[0]
-                    vel_y = asteroid.velocity[1]
+                    obs_x0 = asteroid.start[0]
+                    obs_y0 = asteroid.start[1]
+                    obs_vx = asteroid.velocity[0]
+                    obs_vy = asteroid.velocity[1]
                     obs_r = asteroid.radius
+                    theta = asteroid.orientation
+                    # correct for orientation
+                    world_vx = obs_vx * np.cos(theta) - obs_vy * np.sin(theta)
+                    world_vy = obs_vy * np.cos(theta) + obs_vx * np.sin(theta)
                     # Calculate asteroid position at time t_k
-                    obs_x = start_x + vel_x * t_k
-                    obs_y = start_y + vel_y * t_k
+                    obs_x = obs_x0 + world_vx * t_k
+                    obs_y = obs_y0 + world_vy * t_k
 
                     r_safe = sat_radius + obs_r
                     dist = np.sqrt((sat_x - obs_x) ** 2 + (sat_y - obs_y) ** 2)
                     viol_a_k = max(r_safe - dist, 0.0)
                     a_violation[k] += viol_a_k
 
+        # docking constraints violation
+        s_dock_viol = np.zeros(K)
+        pos_dock_viol = np.zeros(K)
+        if isinstance(self.goal, DockingTarget):
+            A, B, C, A1, A2, half_p_angle = self.goal.get_landing_constraint_points()
+            segment = np.array([A1[0] - A2[0], A1[1] - A2[1]])  # from A2 to A1
+            len_seg = np.linalg.norm(segment)
+            norm_seg = segment / len_seg
+            midpoint = np.array([A2[0] + norm_seg[0] * len_seg / 2, A2[1] + norm_seg[1] * len_seg / 2])
+            obs_x = midpoint[0]
+            obs_y = midpoint[1]
+            obs_r = len_seg / 2
+            r_safe = sat_radius + obs_r
+            for k in range(K - 5):
+                sat_x = X[0, k]
+                sat_y = X[1, k]
+
+                dist = np.sqrt((sat_x - obs_x) ** 2 + (sat_y - obs_y) ** 2)
+                s_dock_viol[k] = np.maximum(r_safe - dist, 0.0)
+            seg_A_B = np.array([B[0] - A[0], B[1] - A[1]])  # from A to B
+            seg_A_C = np.array([C[0] - A[0], C[1] - A[1]])  # from A to C
+            for k in range(K - 6, K):
+                xs = X[0, k]
+                ys = X[1, k]
+                expr1 = seg_A_B[0] * (xs - A[0]) + seg_A_B[1] * (ys - A[1])
+                pos_dock_viol_k_1 = min(expr1, 0.0)
+                pos_dock_viol[k] += np.abs(pos_dock_viol_k_1)
+                expr2 = seg_A_C[0] * (xs - A[0]) + seg_A_C[1] * (ys - A[1])
+                pos_dock_viol_k_2 = min(expr2, 0.0)
+                pos_dock_viol[k] += np.abs(pos_dock_viol_k_2)
+
         # compute total violation per timestep
-        total_violation = self.params.lambda_nu * (defects + p_violation + a_violation)
+        total_violation = self.params.lambda_nu * (defects + p_violation + a_violation + s_dock_viol + pos_dock_viol)
 
         # compute trapz
         trapz = 0
