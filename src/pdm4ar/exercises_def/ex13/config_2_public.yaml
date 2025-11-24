@@ -12,9 +12,9 @@ agents:
     goal:
       type: dock
       state: 
-        x: 5
-        y: -4
-        psi: 4.71
+        x: 8.5
+        y: 8
+        psi: 3.3
         vx: 0.0
         vy: 0.0
         dpsi: 0.0

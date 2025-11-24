@@ -158,10 +158,6 @@ class SatellitePlanner:
 
         # Initial reference
         X_bar, U_bar, p_bar = self.initial_guess()
-        # update self.
-        self.X_bar = X_bar
-        self.U_bar = U_bar
-        self.p_bar = p_bar
 
         constraints = self._get_constraints()
         objective = self._get_objective()
@@ -171,6 +167,10 @@ class SatellitePlanner:
         self.problem_parameters["X_bar"].value = X_bar
         self.problem_parameters["U_bar"].value = U_bar
         self.problem_parameters["p_bar"].value = p_bar
+        # update self.
+        self.X_bar = X_bar
+        self.U_bar = U_bar
+        self.p_bar = p_bar
 
         for i in range(self.params.max_iterations):
             print(i)
@@ -208,14 +208,14 @@ class SatellitePlanner:
                 print(np.max(self.variables["nu_s_dock"].value))
                 print(np.max(self.variables["nu_pos_dock"].value))
 
-            # self._update_trust_region()
-            # update both prob params and self.
+            self._update_trust_region()
+            """# update both prob params and self.
             self.problem_parameters["X_bar"].value = self.variables["X"].value
             self.problem_parameters["U_bar"].value = self.variables["U"].value
             self.problem_parameters["p_bar"].value = self.variables["p"].value
             self.X_bar = self.variables["X"].value
             self.U_bar = self.variables["U"].value
-            self.p_bar = self.variables["p"].value
+            self.p_bar = self.variables["p"].value"""
 
         # Example data: sequence from array
         mycmds, mystates = self._extract_seq_from_array()
@@ -418,9 +418,9 @@ class SatellitePlanner:
         # trust region constraints
         tr_constraints = []
         for k in range(K):
-            dx = X[:, k] - self.X_bar[:, k]
-            du = U[:, k] - self.U_bar[:, k]
-            dp = p - self.p_bar[0]
+            dx = X[:, k] - self.problem_parameters["X_bar"][:, k]
+            du = U[:, k] - self.problem_parameters["U_bar"][:, k]
+            dp = p - self.problem_parameters["p_bar"][0]
             tr_constraints.append(
                 cvx.norm(dx, 2) + cvx.norm(du, 2) + cvx.norm(dp, 2) <= self.problem_parameters["eta_tr"]
             )
@@ -647,13 +647,23 @@ class SatellitePlanner:
         time_cost = float(self.params.weight_p @ p)
         print("time_cost = ", time_cost)
 
+        # Initial condition violation
+        x0_target = self.problem_parameters["init_vec"].value
+        init_violation = np.sum(np.abs(X[:, 0] - x0_target))
+        print("init_violation = ", init_violation)
+
+        # Terminal condition violation
+        goal = self.problem_parameters["goal_vec"].value
+        final_violation = np.sum(np.abs(X[:, -1] - goal))
+        print("final_violation = ", final_violation)
+
         # Compute defects
         defects = []
         X_nl = self.integrator.integrate_nonlinear_piecewise(X, U, p)
         for k in range(K - 1):
             A_bar = self.problem_parameters["A_bar"][:, k].value
             B_minus_bar = self.problem_parameters["B_minus_bar"][:, k].value
-            B_plus_bar = self.problem_parameters["B_minus_bar"][:, k].value
+            B_plus_bar = self.problem_parameters["B_plus_bar"][:, k].value
             F_bar = self.problem_parameters["F_bar"][:, k].value
             r_bar = self.problem_parameters["r_bar"][:, k].value
             A_k = A_bar.reshape((n_x, n_x), order="F")
@@ -666,16 +676,6 @@ class SatellitePlanner:
         # Dynamic violation
         dyn_violation = np.sum(np.abs(defects))
         print("dyn_violation = ", dyn_violation)
-
-        # Initial condition violation
-        x0_target = self.problem_parameters["init_vec"].value
-        init_violation = np.sum(np.abs(X[:, 0] - x0_target))
-        print("init_violation = ", init_violation)
-
-        # Terminal condition violation
-        goal = self.problem_parameters["goal_vec"].value
-        final_violation = np.sum(np.abs(X[:, -1] - goal))
-        print("final_violation = ", final_violation)
 
         # planets constraint violation
         sat_radius = np.sqrt((self.sg.w_half + self.sg.w_panel) ** 2 + max(self.sg.l_f, self.sg.l_r) ** 2)
@@ -729,6 +729,86 @@ class SatellitePlanner:
         J = time_cost + slack_penalty
 
         return float(J)
+
+    def compute_trapz(self, X, U, p):
+        K = self.params.K
+        lam = self.params.lambda_nu
+        n_x = self.satellite.n_x
+        n_u = self.satellite.n_u
+        n_p = self.satellite.n_p
+        num_planets = len(self.asteroids)
+        num_asteroids = len(self.asteroids)
+
+        # Compute defects
+        defects = np.zeros(K)
+        X_nl = self.integrator.integrate_nonlinear_piecewise(X, U, p)
+        for k in range(K - 1):
+            A_bar = self.problem_parameters["A_bar"][:, k].value
+            B_minus_bar = self.problem_parameters["B_minus_bar"][:, k].value
+            B_plus_bar = self.problem_parameters["B_plus_bar"][:, k].value
+            F_bar = self.problem_parameters["F_bar"][:, k].value
+            r_bar = self.problem_parameters["r_bar"][:, k].value
+            A_k = A_bar.reshape((n_x, n_x), order="F")
+            Bm_k = B_minus_bar.reshape((n_x, n_u), order="F")
+            Bp_k = B_plus_bar.reshape((n_x, n_u), order="F")
+            F_k = F_bar.reshape((n_x, n_p), order="F")
+            r_k = r_bar
+
+            viol_d_k = -X_nl[:, k + 1] + (A_k @ X[:, k] + Bp_k @ U[:, k + 1] + Bm_k @ U[:, k] + F_k @ p + r_k)
+            defects[k + 1] = np.linalg.norm(viol_d_k, 2)
+
+        sat_radius = np.sqrt((self.sg.w_half + self.sg.w_panel) ** 2 + max(self.sg.l_f, self.sg.l_r) ** 2)
+        # planets constraint violation per timestep
+        p_violation = np.zeros(K)
+        if num_planets != 0:
+            for k in range(K):
+                sat_x = X[0, k]
+                sat_y = X[1, k]
+                for planet in self.planets.values():
+                    obs_x = planet.center[0]
+                    obs_y = planet.center[1]
+                    obs_r = planet.radius
+
+                    r_safe = sat_radius + obs_r
+                    dist = np.sqrt((sat_x - obs_x) ** 2 + (sat_y - obs_y) ** 2)
+                    viol_p_k = max(r_safe - dist, 0.0)
+                    p_violation[k] += viol_p_k
+
+        # asteroids constraint violation per timestep
+        a_violation = np.zeros(K)
+        num_asteroids = len(self.asteroids)
+        if num_asteroids != 0:
+            final_time = float(p[0])
+            for k in range(K):
+                tau = k / (K - 1)
+                t_k = tau * final_time
+                sat_x = X[0, k]
+                sat_y = X[1, k]
+
+                for asteroid in self.asteroids.values():
+                    start_x = asteroid.start[0]
+                    start_y = asteroid.start[1]
+                    vel_x = asteroid.velocity[0]
+                    vel_y = asteroid.velocity[1]
+                    obs_r = asteroid.radius
+                    # Calculate asteroid position at time t_k
+                    obs_x = start_x + vel_x * t_k
+                    obs_y = start_y + vel_y * t_k
+
+                    r_safe = sat_radius + obs_r
+                    dist = np.sqrt((sat_x - obs_x) ** 2 + (sat_y - obs_y) ** 2)
+                    viol_a_k = max(r_safe - dist, 0.0)
+                    a_violation[k] += viol_a_k
+
+        # compute total violation per timestep
+        total_violation = self.params.lambda_nu * (defects + p_violation + a_violation)
+
+        # compute trapz
+        trapz = 0
+        for k in range(K - 1):
+            trapz += (1 / (2 * (K - 1))) * total_violation[k]
+
+        return trapz
 
     # @staticmethod
     def _extract_seq_from_array(self) -> tuple[DgSampledSequence[SatelliteCommands], DgSampledSequence[SatelliteState]]:
