@@ -28,7 +28,7 @@ class SolverParameters:
     """
 
     # Cvxpy solver parameters
-    solver: str = "ECOS"  # specify solver to use
+    solver: str = "CLARABEL"  # specify solver to use
     verbose_solver: bool = False  # if True, the optimization steps are shown
     max_iterations: int = 100  # max algorithm iterations
 
@@ -88,6 +88,7 @@ class SatellitePlanner:
         sg: SatelliteGeometry,
         sp: SatelliteParameters,
         goal: PlanningGoal,
+        boundaries: dict,
     ):
         """
         Pass environment information to the planner.
@@ -97,6 +98,7 @@ class SatellitePlanner:
         self.sg = sg
         self.sp = sp
         self.goal = goal
+        self.boundaries = boundaries
 
         # Solver Parameters
         self.params = SolverParameters()
@@ -442,10 +444,10 @@ class SatellitePlanner:
             self.variables["p"] <= p_max,
             self.variables["p"] >= 0,
             # within bounds
-            self.variables["X"][0, :] >= -11 + sat_radius,
-            self.variables["X"][1, :] >= -11 + sat_radius,
-            self.variables["X"][0, :] <= 11 - sat_radius,
-            self.variables["X"][1, :] <= 11 - sat_radius,
+            self.variables["X"][0, :] >= self.boundaries["x_min"] + sat_radius,
+            self.variables["X"][1, :] >= self.boundaries["y_min"] + sat_radius,
+            self.variables["X"][0, :] <= self.boundaries["x_max"] - sat_radius,
+            self.variables["X"][1, :] <= self.boundaries["y_max"] - sat_radius,
         ]
 
         if num_planets != 0:

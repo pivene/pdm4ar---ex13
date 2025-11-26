@@ -11,6 +11,7 @@ from dg_commons.sim.models.obstacles import StaticObstacle
 from dg_commons.sim.models.obstacles_dyn import DynObstacleState
 from dg_commons.sim.models.satellite import SatelliteCommands, SatelliteState
 from dg_commons.sim.models.satellite_structures import SatelliteGeometry, SatelliteParameters
+from shapely import LineString
 
 from pdm4ar.exercises.ex13.planner import SatellitePlanner
 from pdm4ar.exercises_def.ex13.goal import SpaceshipTarget, DockingTarget
@@ -90,12 +91,27 @@ class SatelliteAgent(Agent):
         self.myname = init_sim_obs.my_name
         self.sg = init_sim_obs.model_geometry
         self.sp = init_sim_obs.model_params
+        self.static_obstacles = init_sim_obs.dg_scenario.static_obstacles
+
+        if self.static_obstacles:
+            for obs in self.static_obstacles:
+                if hasattr(obs, "shape") and isinstance(obs.shape, LineString):
+                    coords = np.array(obs.shape.coords)
+                    boundary_dict = {
+                        "x_min": np.min(coords[:, 0]),
+                        "x_max": np.max(coords[:, 0]),
+                        "y_min": np.min(coords[:, 1]),
+                        "y_max": np.max(coords[:, 1]),
+                    }
+                    break
+
         self.planner = SatellitePlanner(
             planets=self.planets,
             asteroids=self.asteroids,
             sg=self.sg,
             sp=self.sp,
             goal=init_sim_obs.goal,
+            boundaries=boundary_dict,
         )
         assert isinstance(init_sim_obs.goal, SpaceshipTarget | DockingTarget)
         # make sure you consider both types of goals accordingly
