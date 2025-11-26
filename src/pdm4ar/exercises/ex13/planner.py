@@ -125,7 +125,7 @@ class SatellitePlanner:
             self.variables.update({"nu_s_p": cvx.Variable((num_planets, K))})
         if isinstance(self.goal, DockingTarget):
             self.variables.update({"nu_s_dock": cvx.Variable(K - 5)})
-            self.variables.update({"nu_pos_dock": cvx.Variable(6)})
+            self.variables.update({"nu_pos_dock": cvx.Variable(3)})
 
         # Problem Parameters
         self.problem_parameters = self._get_problem_parameters()
@@ -482,7 +482,7 @@ class SatellitePlanner:
                 )
             seg_A_B = np.array([B[0] - A[0], B[1] - A[1]])  # from A to B
             seg_A_C = np.array([C[0] - A[0], C[1] - A[1]])  # from A to C
-            for local_i, k in enumerate(range(K - 6, K)):
+            for local_i, k in enumerate(range(K - 3, K)):
                 xs = self.variables["X"][0, k]
                 ys = self.variables["X"][1, k]
                 expr1 = seg_A_B[0] * (xs - A[0]) + seg_A_B[1] * (ys - A[1])
@@ -520,7 +520,7 @@ class SatellitePlanner:
             slack_cost += self.params.lambda_nu * cvx.norm1(self.variables["nu_s_a"])
         if isinstance(self.goal, DockingTarget):
             slack_cost += self.params.lambda_nu * cvx.norm1(self.variables["nu_s_dock"])
-            slack_cost += self.params.lambda_nu * cvx.norm1(self.variables["nu_pos_dock"])
+            slack_cost += 10 * cvx.norm1(self.variables["nu_pos_dock"])
 
         objective = self.params.weight_p @ self.variables["p"] + slack_cost
 
@@ -701,8 +701,8 @@ class SatellitePlanner:
                     obs_r = planet.radius
 
                     r_safe = sat_radius + obs_r
-                    dist = np.sqrt((sat_x - obs_x) ** 2 + (sat_y - obs_y) ** 2)
-                    p_violation += np.maximum(r_safe - dist, 0.0)
+                    dist = (sat_x - obs_x) ** 2 + (sat_y - obs_y) ** 2
+                    p_violation += np.maximum(r_safe**2 - dist, 0.0)
 
         print("p_violation = ", p_violation)
         # asteroids constraint violation
@@ -727,12 +727,12 @@ class SatellitePlanner:
                     world_vx = vel_x * np.cos(theta) - vel_y * np.sin(theta)
                     world_vy = vel_y * np.cos(theta) + vel_x * np.sin(theta)
                     # Calculate asteroid position at time t_k
-                    obs_x = start_x + vel_x * t_k
-                    obs_y = start_y + vel_y * t_k
+                    obs_x = start_x + world_vx * t_k
+                    obs_y = start_y + world_vy * t_k
 
                     r_safe = sat_radius + obs_r
-                    dist = np.sqrt((sat_x - obs_x) ** 2 + (sat_y - obs_y) ** 2)
-                    a_violation += np.maximum(r_safe - dist, 0.0)
+                    dist = (sat_x - obs_x) ** 2 + (sat_y - obs_y) ** 2
+                    a_violation += np.maximum(r_safe**2 - dist, 0.0)
         print("a_violation = ", a_violation)
 
         # docking constraints violation
@@ -752,8 +752,8 @@ class SatellitePlanner:
                 sat_x = X[0, k]
                 sat_y = X[1, k]
 
-                dist = np.sqrt((sat_x - obs_x) ** 2 + (sat_y - obs_y) ** 2)
-                s_dock_viol += np.maximum(r_safe - dist, 0.0)
+                dist = (sat_x - obs_x) ** 2 + (sat_y - obs_y) ** 2
+                s_dock_viol += np.maximum(r_safe**2 - dist, 0.0)
             seg_A_B = np.array([B[0] - A[0], B[1] - A[1]])  # from A to B
             seg_A_C = np.array([C[0] - A[0], C[1] - A[1]])  # from A to C
             for k in range(K - 6, K):
