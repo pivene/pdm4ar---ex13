@@ -350,7 +350,7 @@ class SatellitePlanner:
                 bar_x = self.problem_parameters["X_bar"][0, k]
                 bar_y = self.problem_parameters["X_bar"][1, k]
                 n_ps = 0
-                for planet in self.planets.values():
+                for n_ps, planet in enumerate(self.planets.values()):
                     obs_x = planet.center[0]
                     obs_y = planet.center[1]
                     obs_r = planet.radius
@@ -367,8 +367,6 @@ class SatellitePlanner:
                         <= self.variables["nu_s_p"][n_ps, k]
                     )
 
-                    n_ps += 1
-
         # asteroids constraints
         asteroids_constraints = []
         if num_asteroids != 0:
@@ -377,8 +375,7 @@ class SatellitePlanner:
                 t_k = tau_k * self.problem_parameters["p_bar"][0]
                 bar_x = self.problem_parameters["X_bar"][0, k]
                 bar_y = self.problem_parameters["X_bar"][1, k]
-                j = 0
-                for asteroid in self.asteroids.values():
+                for n_as, asteroid in enumerate(self.asteroids.values()):
                     obs_x0 = asteroid.start[0]
                     obs_y0 = asteroid.start[1]
                     obs_vx = asteroid.velocity[0]
@@ -413,10 +410,8 @@ class SatellitePlanner:
                         - 2 * dy * self.variables["X"][1, k]
                         - dp * self.variables["p"][0]
                         + r
-                        <= self.variables["nu_s_a"][j, k]
+                        <= self.variables["nu_s_a"][n_as, k]
                     )
-
-                    j += 1
 
         # trust region constraints
         tr_constraints = []
