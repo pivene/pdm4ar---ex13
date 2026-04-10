@@ -9,7 +9,7 @@ Full problem description, scoring, and setup instructions are on the [course web
 
 ## Repository Structure
 
-All student code lives under `src/pdm4ar/exercises/`. The rest of the repository is the course-provided scaffold.
+All student code lives under `src/pdm4ar/exercises/`.
 
 | Module | Responsibility |
 |---|---|
